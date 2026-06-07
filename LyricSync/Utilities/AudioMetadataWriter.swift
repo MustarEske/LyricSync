@@ -46,9 +46,6 @@ enum AudioMetadataWriter {
         }
 
         // Parse existing ID3 header
-        let id3Header = "ID3"
-        let id3HeaderData = id3Header.data(using: .ascii)!
-
         // Check if file already has ID3v2 tag
         var outputData: Data
         if originalData.prefix(3).elementsEqual([0x49, 0x44, 0x33]) {
@@ -170,9 +167,7 @@ enum AudioMetadataWriter {
     }
 
     private static func insertSYLTIntoID3(originalData: Data, syltFrame: Data) -> Data {
-        // Parse existing ID3 header
-        let version = originalData[3] // major version
-        let flags = originalData[5]
+        // Parse existing ID3 header (version at [3], flags at [5])
 
         // Read tag size (syncsafe integer)
         let sizeBytes = [originalData[6], originalData[7], originalData[8], originalData[9]]

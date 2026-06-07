@@ -1,0 +1,37 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build LyricSync app
+        run: bash build.sh
+
+      - name: Verify app bundle
+        run: |
+          test -f build/LyricSync.app/Contents/MacOS/LyricSync
+          test -f build/LyricSync.app/Contents/Info.plist
+          echo "✅ App bundle is valid"
+
+      - name: Run unit tests
+        run: |
+          cd LyricSync
+          # Compile test runner + SongDocument (no SwiftUI needed for model tests)
+          swiftc \
+            -sdk $(xcrun --sdk macosx --show-sdk-path) \
+            -target arm64-apple-macos14.0 \
+            -framework Foundation \
+            -parse-as-library \
+            -o /tmp/lyricsync-tests \
+            LyricSyncTests/Tests.swift \
+            LyricSync/Models/SongDocument.swift
+          # Run tests
+          /tmp/lyricsync-tests

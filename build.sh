@@ -25,7 +25,7 @@ SWIFT_FILES=(
     "$SCRIPT_DIR/LyricSync/Utilities/AudioEngine.swift"
     "$SCRIPT_DIR/LyricSync/Utilities/AudioMetadataWriter.swift"
     "$SCRIPT_DIR/LyricSync/Views/ContentView.swift"
-    "$SCRIPT_DIR/LyricSync/Views/TimelineView.swift"
+    "$SCRIPT_DIR/LyricSync/Views/WaveformView.swift"
     "$SCRIPT_DIR/LyricSync/Views/LyricListView.swift"
     "$SCRIPT_DIR/LyricSync/Views/TransportBar.swift"
     "$SCRIPT_DIR/LyricSync/Views/TapToSetOverlay.swift"

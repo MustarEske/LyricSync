@@ -1,101 +1,307 @@
 import SwiftUI
 
-/// Sidebar view showing all lyric lines in a list
+/// Sidebar view showing lyric lines.
+/// When raw text lines are loaded, shows all lines with stamped ones highlighted.
+/// Otherwise shows the standard synced lyric list.
 struct LyricListView: View {
     @ObservedObject var viewModel: LyricSyncViewModel
     @State private var editingId: UUID?
     @State private var editingText = ""
+    @State private var editingRawIndex: Int? = nil
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Lyrics")
-                    .font(.headline)
-                Spacer()
-                Text("\(viewModel.document.lyrics.count) lines")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                if viewModel.document.hasImportedText {
+                    Text("Lines")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("\(viewModel.document.nextLineIndex)/\(viewModel.document.rawTextLines.count)")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Lyrics")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("\(viewModel.document.lyrics.count) lines")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(Color(NSColor.windowBackgroundColor))
 
             Divider()
 
-            // Lyric list
-            if viewModel.document.lyrics.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "music.note.list")
-                        .font(.largeTitle)
-                        .foregroundColor(.secondary)
-                    Text("No lyrics yet")
-                        .foregroundColor(.secondary)
-                    Text("Click the timeline or press ⌘N to add")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Content
+            if viewModel.document.hasImportedText {
+                importedTextListView
+            } else if viewModel.document.lyrics.isEmpty {
+                emptyStateView
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 2) {
-                            ForEach(Array(viewModel.document.lyrics.enumerated()), id: \.element.id) { index, lyric in
-                                LyricRowView(
-                                    lyric: lyric,
-                                    index: index,
-                                    isSelected: lyric.id == viewModel.selectedLyricId,
-                                    isCurrent: index == viewModel.currentLyricIndex,
-                                    isEditing: editingId == lyric.id,
-                                    editingText: $editingText,
-                                    onSelect: {
-                                        viewModel.selectedLyricId = lyric.id
-                                        viewModel.seekToLyric(lyric)
-                                    },
-                                    onDoubleClick: {
-                                        editingId = lyric.id
-                                        editingText = lyric.text
-                                    },
-                                    onEditCommit: {
-                                        viewModel.document.updateLyric(id: lyric.id, text: editingText)
-                                        editingId = nil
-                                        editingText = ""
-                                    },
-                                    onDelete: {
-                                        viewModel.document.removeLyric(id: lyric.id)
+                lyricListView
+            }
+        }
+    }
+
+    // MARK: - Imported Text View (Tap-to-Set mode)
+
+    private var importedTextListView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(Array(viewModel.document.rawTextLines.enumerated()), id: \.offset) { index, text in
+                        let isStamped = index < viewModel.document.nextLineIndex
+                        let isNext = index == viewModel.document.nextLineIndex
+                        let stampedLyric = isStamped ? viewModel.document.lyrics.first(where: { $0.text == text }) : nil
+
+                        ImportedLineRow(
+                            index: index,
+                            text: text,
+                            isStamped: isStamped,
+                            isNext: isNext,
+                            isEditing: editingRawIndex == index,
+                            timestamp: stampedLyric?.formattedTimestamp ?? nil,
+                            onTap: {
+                                if isStamped, let lyric = stampedLyric {
+                                    viewModel.selectedLyricId = lyric.id
+                                    viewModel.audioEngine.seek(to: lyric.timestamp)
+                                }
+                            },
+                            onDoubleClick: {
+                                editingRawIndex = index
+                            },
+                            onEditCommit: { newText in
+                                // Update the raw text line
+                                if let idx = editingRawIndex {
+                                    viewModel.document.rawTextLines[idx] = newText
+                                    // Also update the stamped lyric if it exists
+                                    if let lyric = viewModel.document.lyrics.first(where: { $0.text == text }) {
+                                        viewModel.document.updateLyric(id: lyric.id, text: newText)
                                     }
-                                )
-                                .id(lyric.id)
-                            }
-                        }
-                        .padding(4)
-                    }
-                    // Auto-scroll to current lyric during playback
-                    .onChange(of: viewModel.currentLyricIndex) { _, newIndex in
-                        if let index = newIndex {
-                            let lyrics = viewModel.document.lyrics
-                            if index < lyrics.count {
-                                withAnimation(.easeInOut(duration: 0.3)) {
-                                    proxy.scrollTo(lyrics[index].id, anchor: .center)
+                                }
+                                editingRawIndex = nil
+                            },
+                            onDelete: {
+                                // Remove the stamped lyric for this line
+                                if isStamped, let lyric = stampedLyric {
+                                    viewModel.document.removeLyric(id: lyric.id)
                                 }
                             }
-                        }
+                        )
+                        .id("line-\(index)")
                     }
-                    // Also scroll when user manually selects a lyric
-                    .onChange(of: viewModel.selectedLyricId) { _, newId in
-                        if let id = newId {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                proxy.scrollTo(id, anchor: .center)
-                            }
-                        }
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+            }
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+            .onChange(of: viewModel.document.nextLineIndex) { _, newIndex in
+                if newIndex < viewModel.document.rawTextLines.count {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        proxy.scrollTo("line-\(newIndex)", anchor: .center)
                     }
                 }
             }
         }
     }
+
+    // MARK: - Standard Lyric List View
+
+    private var lyricListView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(Array(viewModel.document.lyrics.enumerated()), id: \.element.id) { index, lyric in
+                        LyricRowView(
+                            lyric: lyric,
+                            index: index,
+                            isSelected: lyric.id == viewModel.selectedLyricId,
+                            isCurrent: index == viewModel.currentLyricIndex,
+                            isEditing: editingId == lyric.id,
+                            editingText: $editingText,
+                            onSelect: {
+                                viewModel.selectedLyricId = lyric.id
+                                viewModel.seekToLyric(lyric)
+                            },
+                            onDoubleClick: {
+                                editingId = lyric.id
+                                editingText = lyric.text
+                            },
+                            onEditCommit: {
+                                viewModel.document.updateLyric(id: lyric.id, text: editingText)
+                                editingId = nil
+                                editingText = ""
+                            },
+                            onDelete: {
+                                viewModel.document.removeLyric(id: lyric.id)
+                            },
+                            onRemoveTiming: {
+                                // Remove timing: delete the lyric entry
+                                viewModel.document.removeLyric(id: lyric.id)
+                                if viewModel.selectedLyricId == lyric.id {
+                                    viewModel.selectedLyricId = nil
+                                }
+                            }
+                        )
+                        .id(lyric.id)
+                    }
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+            }
+            .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+            .onChange(of: viewModel.currentLyricIndex) { _, newIndex in
+                if let index = newIndex {
+                    let lyrics = viewModel.document.lyrics
+                    if index < lyrics.count {
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(lyrics[index].id, anchor: .center)
+                        }
+                    }
+                }
+            }
+            .onChange(of: viewModel.selectedLyricId) { _, newId in
+                if let id = newId {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Empty State
+
+    private var emptyStateView: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "music.note.list")
+                .font(.system(size: 28))
+                .foregroundColor(.secondary.opacity(0.5))
+            Text("No lyrics yet")
+                .font(.system(size: 13))
+                .foregroundColor(.secondary)
+            Text("Import a .txt or .lrc file to begin")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary.opacity(0.7))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+    }
 }
 
-/// A single row in the lyric list
+// MARK: - Imported Line Row
+
+struct ImportedLineRow: View {
+    let index: Int
+    let text: String
+    let isStamped: Bool
+    let isNext: Bool
+    let isEditing: Bool
+    let timestamp: String?
+    let onTap: () -> Void
+    let onDoubleClick: () -> Void
+    let onEditCommit: (String) -> Void
+    let onDelete: () -> Void
+
+    @State private var editText: String = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Index
+            Text(String(format: "%02d", index + 1))
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(isNext ? .white : (isStamped ? .secondary.opacity(0.5) : .secondary.opacity(0.4)))
+                .frame(width: 22, alignment: .leading)
+
+            // Timestamp (if stamped)
+            if let ts = timestamp {
+                Text(ts)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(isNext ? .white.opacity(0.9) : .secondary.opacity(0.6))
+                    .frame(width: 68, alignment: .leading)
+            } else {
+                Text("--:--.--")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary.opacity(0.3))
+                    .frame(width: 68, alignment: .leading)
+            }
+
+            // Text (editable)
+            if isEditing {
+                TextField("Lyric text", text: $editText, onCommit: {
+                    onEditCommit(editText)
+                })
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .onSubmit {
+                    onEditCommit(editText)
+                }
+                .onAppear {
+                    editText = text
+                }
+            } else {
+                Text(text)
+                    .font(.system(size: 12, weight: isNext ? .semibold : .regular))
+                    .foregroundColor(isNext ? .white : (isStamped ? .secondary.opacity(0.6) : .primary))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            // Status / action icons
+            if !isEditing {
+                if isStamped {
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 9))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(.red.opacity(0.7))
+                    .help("Remove timing")
+                } else if isNext {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, isNext ? 5 : 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(backgroundFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(borderColor, lineWidth: isNext ? 1 : 0)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+        .onTapGesture(count: 2, perform: onDoubleClick)
+    }
+
+    private var backgroundFill: Color {
+        if isNext {
+            return Color.orange.opacity(0.3)
+        } else if isStamped {
+            return Color.green.opacity(0.08)
+        } else {
+            return Color.clear
+        }
+    }
+
+    private var borderColor: Color {
+        if isNext {
+            return Color.orange.opacity(0.5)
+        } else {
+            return Color.clear
+        }
+    }
+}
+
+// MARK: - Standard Lyric Row
+
 struct LyricRowView: View {
     let lyric: LyricLine
     let index: Int
@@ -107,54 +313,66 @@ struct LyricRowView: View {
     let onDoubleClick: () -> Void
     let onEditCommit: () -> Void
     let onDelete: () -> Void
+    let onRemoveTiming: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            // Timestamp button
-            Text(lyric.formattedTimestamp)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(isCurrent ? .white : (isSelected ? .accentColor : .secondary))
-                .frame(width: 70, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(String(format: "%02d", index + 1))
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .foregroundColor(isCurrent ? .white.opacity(0.7) : .secondary.opacity(0.5))
+                Text(lyric.formattedTimestamp)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(isCurrent ? .white.opacity(0.9) : (isSelected ? .accentColor : .secondary))
+            }
+            .frame(width: 68, alignment: .leading)
 
-            // Lyric text (editable)
             if isEditing {
                 TextField("Lyric text", text: $editingText, onCommit: onEditCommit)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .onSubmit(onEditCommit)
             } else {
-                Text(lyric.text.isEmpty ? "..." : lyric.text)
-                    .font(.system(size: 13, weight: isCurrent ? .semibold : .regular))
-                    .foregroundColor(isCurrent ? .white : (lyric.text.isEmpty ? .secondary : .primary))
+                Text(lyric.text.isEmpty ? "…" : lyric.text)
+                    .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                    .foregroundColor(isCurrent ? .white : (lyric.text.isEmpty ? .secondary.opacity(0.5) : .primary))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Delete button (visible on selection)
             if isSelected && !isEditing {
                 Button(action: onDelete) {
                     Image(systemName: "trash")
-                        .font(.system(size: 10))
+                        .font(.system(size: 9))
                 }
                 .buttonStyle(.borderless)
-                .foregroundColor(.red)
+                .foregroundColor(.red.opacity(0.8))
+                .help("Remove timing")
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, isCurrent ? 6 : 4)
+        .padding(.vertical, isCurrent ? 5 : 3)
         .background(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 5)
                 .fill(backgroundFill)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(borderColor, lineWidth: isCurrent ? 1.5 : 0)
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(borderColor, lineWidth: isCurrent ? 1 : 0)
         )
         .contentShape(Rectangle())
-        .onTapGesture {
-            onSelect()
-        }
-        .onTapGesture(count: 2) {
-            onDoubleClick()
+        .onTapGesture { onSelect() }
+        .onTapGesture(count: 2) { onDoubleClick() }
+        .contextMenu {
+            Button("Remove Timing") {
+                onRemoveTiming()
+            }
+            Button("Seek Here") {
+                onSelect()
+            }
+            Divider()
+            Text(lyric.text.isEmpty ? "(empty)" : lyric.text)
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
 
@@ -162,7 +380,7 @@ struct LyricRowView: View {
         if isCurrent {
             return Color.accentColor
         } else if isSelected {
-            return Color.accentColor.opacity(0.15)
+            return Color.accentColor.opacity(0.1)
         } else {
             return Color.clear
         }
@@ -170,7 +388,7 @@ struct LyricRowView: View {
 
     private var borderColor: Color {
         if isCurrent {
-            return Color.accentColor.opacity(0.5)
+            return Color.accentColor.opacity(0.4)
         } else {
             return Color.clear
         }

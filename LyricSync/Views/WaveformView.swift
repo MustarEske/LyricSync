@@ -1,20 +1,28 @@
 import SwiftUI
 
-/// A custom Canvas-based timeline view showing waveform, playhead, and lyric markers
-struct TimelineView: View {
+/// Waveform canvas — optimized for performance.
+struct WaveformView: View {
     @ObservedObject var viewModel: LyricSyncViewModel
+
     @State private var dragLyricId: UUID?
-    @State private var dragOffset: CGFloat = 0
+    @State private var dragOffsetX: CGFloat = 0
+    @State private var isDraggingPlayhead = false
+    @State private var dragPlayheadX: CGFloat = 0
 
     var body: some View {
         GeometryReader { geometry in
             Canvas { context, size in
                 let width = size.width
                 let height = size.height
-                let midY = height / 2
                 let duration = viewModel.document.duration
 
-                guard duration > 0 else { return }
+                guard duration > 0 else {
+                    let emptyText = Text("Open an audio file to begin")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                    context.draw(emptyText, at: CGPoint(x: width / 2, y: height / 2), anchor: .center)
+                    return
+                }
 
                 // ── Background ──
                 context.fill(
@@ -22,19 +30,23 @@ struct TimelineView: View {
                     with: .color(Color(NSColor.controlBackgroundColor))
                 )
 
-                // ── Waveform ──
-                drawWaveform(context: context, width: width, height: height, midY: midY)
+                // ── Waveform (single path, not 1000 rects) ──
+                drawWaveform(context: context, width: width, height: height)
 
-                // ── Time grid lines ──
+                // ── Time grid ──
                 drawTimeGrid(context: context, width: width, height: height, duration: duration)
 
                 // ── Lyric markers ──
-                for lyric in viewModel.document.lyrics {
-                    let x = CGFloat(lyric.timestamp / duration) * width
-                    let isSelected = lyric.id == viewModel.selectedLyricId
+                let lyrics = viewModel.document.lyrics  // single access
+                for lyric in lyrics {
+                    var x = CGFloat(lyric.timestamp / duration) * width
+                    if lyric.id == dragLyricId {
+                        x += dragOffsetX
+                    }
 
-                    // Marker line
-                    let lineColor = isSelected ? Color.yellow : Color.red
+                    let isSelected = lyric.id == viewModel.selectedLyricId
+                    let lineColor = isSelected ? Color.yellow : Color.red.opacity(0.8)
+
                     context.stroke(
                         Path { path in
                             path.move(to: CGPoint(x: x, y: 0))
@@ -44,8 +56,7 @@ struct TimelineView: View {
                         lineWidth: isSelected ? 2 : 1
                     )
 
-                    // Marker triangle at top
-                    let triSize: CGFloat = 8
+                    let triSize: CGFloat = 7
                     context.fill(
                         Path { path in
                             path.move(to: CGPoint(x: x - triSize, y: 0))
@@ -56,34 +67,36 @@ struct TimelineView: View {
                         with: .color(lineColor)
                     )
 
-                    // Timestamp label
                     let text = Text(lyric.formattedTimestamp)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.system(size: 8, design: .monospaced))
                         .foregroundColor(isSelected ? .yellow : .secondary)
                     context.draw(text, at: CGPoint(x: x + 2, y: triSize * 1.8), anchor: .leading)
                 }
 
                 // ── Playhead ──
-                let playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * width
-
-                // Playhead glow
-                let glowPath = Path { path in
-                    path.move(to: CGPoint(x: playheadX, y: 0))
-                    path.addLine(to: CGPoint(x: playheadX, y: height))
+                var playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * width
+                if isDraggingPlayhead {
+                    playheadX = dragPlayheadX
                 }
-                context.stroke(glowPath, with: .color(.accentColor.opacity(0.3)), lineWidth: 6)
 
-                // Playhead line
+                context.stroke(
+                    Path { path in
+                        path.move(to: CGPoint(x: playheadX, y: 0))
+                        path.addLine(to: CGPoint(x: playheadX, y: height))
+                    },
+                    with: .color(.accentColor.opacity(0.2)),
+                    lineWidth: isDraggingPlayhead ? 12 : 8
+                )
+
                 context.stroke(
                     Path { path in
                         path.move(to: CGPoint(x: playheadX, y: 0))
                         path.addLine(to: CGPoint(x: playheadX, y: height))
                     },
                     with: .color(.accentColor),
-                    lineWidth: 2
+                    lineWidth: isDraggingPlayhead ? 3 : 2
                 )
 
-                // Playhead triangle
                 context.fill(
                     Path { path in
                         path.move(to: CGPoint(x: playheadX - 6, y: 0))
@@ -94,6 +107,8 @@ struct TimelineView: View {
                     with: .color(.accentColor)
                 )
             }
+            .clipped()
+            .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -106,55 +121,72 @@ struct TimelineView: View {
             .onTapGesture { location in
                 handleTap(at: location, geometry: geometry)
             }
+            .contextMenu {
+                Button("Remove Timing") {
+                    if let id = viewModel.selectedLyricId {
+                        viewModel.document.removeLyric(id: id)
+                        viewModel.selectedLyricId = nil
+                    }
+                }
+                Button("Seek Here") {
+                    if let id = viewModel.selectedLyricId,
+                       let lyric = viewModel.document.lyrics.first(where: { $0.id == id }) {
+                        viewModel.audioEngine.seek(to: lyric.timestamp)
+                    }
+                }
+            }
         }
     }
 
-    // MARK: - Drawing
+    // MARK: - Drawing (optimized)
 
-    private func drawWaveform(context: GraphicsContext, width: CGFloat, height: CGFloat, midY: CGFloat) {
+    private func drawWaveform(context: GraphicsContext, width: CGFloat, height: CGFloat) {
         let data = viewModel.document.waveformData
         guard !data.isEmpty else { return }
 
+        let midY = height / 2
         let step = width / CGFloat(data.count)
-        let waveColor = Color.accentColor.opacity(0.6)
+        let waveColor = Color.accentColor.opacity(0.5)
 
+        // Draw as a single connected path instead of individual rects
         var path = Path()
+        path.move(to: CGPoint(x: 0, y: midY))
+
         for (i, amplitude) in data.enumerated() {
             let x = CGFloat(i) * step
-            let barHeight = CGFloat(amplitude) * (height * 0.8)
+            let barHeight = CGFloat(amplitude) * (height * 0.75)
             path.addRect(CGRect(
                 x: x,
                 y: midY - barHeight / 2,
-                width: max(step - 0.5, 0.5),
+                width: max(step, 0.5),
                 height: barHeight
             ))
         }
+
         context.fill(path, with: .color(waveColor))
     }
 
     private func drawTimeGrid(context: GraphicsContext, width: CGFloat, height: CGFloat, duration: TimeInterval) {
         let interval: TimeInterval = duration > 300 ? 30 : duration > 60 ? 10 : 5
-        let textColor = Color.secondary.opacity(0.7)
+        let textColor = Color.secondary.opacity(0.6)
 
         var t: TimeInterval = 0
         while t <= duration {
             let x = CGFloat(t / duration) * width
 
-            // Grid line
             context.stroke(
                 Path { path in
-                    path.move(to: CGPoint(x: x, y: height - 20))
+                    path.move(to: CGPoint(x: x, y: height - 18))
                     path.addLine(to: CGPoint(x: x, y: height))
                 },
                 with: .color(textColor),
                 lineWidth: 0.5
             )
 
-            // Time label
             let minutes = Int(t) / 60
             let seconds = Int(t) % 60
             let label = Text(String(format: "%d:%02d", minutes, seconds))
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 8, design: .monospaced))
                 .foregroundColor(textColor)
             context.draw(label, at: CGPoint(x: x + 2, y: height - 2), anchor: .topLeading)
 
@@ -168,20 +200,27 @@ struct TimelineView: View {
         let duration = viewModel.document.duration
         guard duration > 0 else { return }
 
+        let playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * geometry.size.width
+
+        // If tapped near the playhead, seek to tap position
+        if abs(location.x - playheadX) < 15 {
+            let time = Double(location.x / geometry.size.width) * duration
+            viewModel.audioEngine.seek(to: max(0, min(time, duration)))
+            return
+        }
+
         let time = Double(location.x / geometry.size.width) * duration
 
-        // Check if we tapped near an existing marker
-        let threshold: CGFloat = 8
+        // Check if tapped near existing lyric marker
         for lyric in viewModel.document.lyrics {
             let x = CGFloat(lyric.timestamp / duration) * geometry.size.width
-            if abs(location.x - x) < threshold {
+            if abs(location.x - x) < 10 {
                 viewModel.selectedLyricId = lyric.id
                 viewModel.audioEngine.seek(to: lyric.timestamp)
                 return
             }
         }
 
-        // Otherwise add a new lyric
         viewModel.addLyric(at: time)
     }
 
@@ -189,11 +228,24 @@ struct TimelineView: View {
         let duration = viewModel.document.duration
         guard duration > 0 else { return }
 
+        let playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * geometry.size.width
+
+        if !isDraggingPlayhead && abs(value.startLocation.x - playheadX) < 15 {
+            isDraggingPlayhead = true
+            dragPlayheadX = playheadX
+        }
+
+        if isDraggingPlayhead {
+            dragPlayheadX = max(0, min(value.location.x, geometry.size.width))
+            let time = Double(dragPlayheadX / geometry.size.width) * duration
+            viewModel.audioEngine.seek(to: max(0, min(time, duration)))
+            return
+        }
+
         if dragLyricId == nil {
-            let threshold: CGFloat = 8
             for lyric in viewModel.document.lyrics {
                 let x = CGFloat(lyric.timestamp / duration) * geometry.size.width
-                if abs(value.startLocation.x - x) < threshold {
+                if abs(value.startLocation.x - x) < 12 {
                     dragLyricId = lyric.id
                     viewModel.selectedLyricId = lyric.id
                     viewModel.beginDragLyric(id: lyric.id)
@@ -202,18 +254,33 @@ struct TimelineView: View {
             }
         }
 
-        if let id = dragLyricId {
-            let time = Double(value.location.x / geometry.size.width) * duration
-            viewModel.moveLyric(id: id, to: max(0, min(time, duration)))
+        if dragLyricId != nil {
+            dragOffsetX = value.location.x - value.startLocation.x
         }
     }
 
     private func handleDragEnded(value: DragGesture.Value, geometry: GeometryProxy) {
         let duration = viewModel.document.duration
+
+        if isDraggingPlayhead {
+            if duration > 0 {
+                let time = Double(dragPlayheadX / geometry.size.width) * duration
+                viewModel.audioEngine.seek(to: max(0, min(time, duration)))
+            }
+            isDraggingPlayhead = false
+            return
+        }
+
         if let id = dragLyricId, duration > 0 {
-            let time = Double(value.location.x / geometry.size.width) * duration
-            viewModel.endDragLyric(id: id, to: max(0, min(time, duration)))
+            let totalOffset = value.location.x - value.startLocation.x
+            if let lyric = viewModel.document.lyrics.first(where: { $0.id == id }) {
+                let originalX = CGFloat(lyric.timestamp / duration) * geometry.size.width
+                let finalX = originalX + totalOffset
+                let time = Double(finalX / geometry.size.width) * duration
+                viewModel.endDragLyric(id: id, to: max(0, min(time, duration)))
+            }
         }
         dragLyricId = nil
+        dragOffsetX = 0
     }
 }

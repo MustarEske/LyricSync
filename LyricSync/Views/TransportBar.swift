@@ -1,97 +1,86 @@
 import SwiftUI
 
-/// Transport bar with playback controls and time display
+/// Compact transport bar with a single play/pause toggle button.
 struct TransportBar: View {
     @ObservedObject var viewModel: LyricSyncViewModel
 
     var body: some View {
-        HStack(spacing: 16) {
-            // File info
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 10) {
+            // ── File info ──
+            VStack(alignment: .leading, spacing: 1) {
                 Text(viewModel.document.fileName)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                 if viewModel.document.duration > 0 {
                     Text(formatDuration(viewModel.document.duration))
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 9, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
             }
-            .frame(maxWidth: 200, alignment: .leading)
+            .frame(maxWidth: 160, alignment: .leading)
 
             Spacer()
 
-            // Playback controls
-            HStack(spacing: 12) {
-                // Skip back
-                Button(action: { viewModel.audioEngine.seek(to: 0) }) {
-                    Image(systemName: "backward.end.fill")
-                }
-                .buttonStyle(.borderless)
-                .disabled(!viewModel.document.hasFile)
-
-                // Play/Pause
-                Button(action: { viewModel.togglePlayback() }) {
-                    Image(systemName: viewModel.audioEngine.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 28))
-                }
-                .buttonStyle(.borderless)
-                .disabled(!viewModel.document.hasFile)
-
-                // Stop
-                Button(action: { viewModel.audioEngine.stop() }) {
-                    Image(systemName: "stop.fill")
-                }
-                .buttonStyle(.borderless)
-                .disabled(!viewModel.document.hasFile)
+            // ── Single play/pause button ──
+            Button(action: { viewModel.togglePlayback() }) {
+                Image(systemName: viewModel.audioEngine.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(.accentColor)
             }
+            .buttonStyle(.borderless)
+            .disabled(!viewModel.document.hasFile)
+            .keyboardShortcut(" ", modifiers: [])
 
-            // Current time display
+            // ── Time display ──
             Text(formatTime(viewModel.audioEngine.currentTime))
-                .font(.system(size: 16, weight: .medium, design: .monospaced))
-                .frame(width: 80)
+                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .foregroundColor(.primary)
+                .frame(width: 70)
 
             Spacer()
 
-            // Add lyric button
+            // ── Action buttons ──
             Button(action: { viewModel.addLyricAtCurrentTime() }) {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: "plus.circle.fill")
-                    Text("Add Lyric")
+                    Text("Add")
                 }
+                .font(.system(size: 11))
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.small)
             .disabled(!viewModel.document.hasFile)
             .keyboardShortcut("n", modifiers: .command)
 
-            // Tap-to-Set mode toggle
             Button(action: { viewModel.toggleTapToSetMode() }) {
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Image(systemName: viewModel.tapToSetMode ? "hand.tap.fill" : "hand.tap")
-                    Text(viewModel.tapToSetMode ? "Tap-Set ON" : "Tap to Set")
+                    Text(viewModel.tapToSetMode ? "ON" : "Tap")
                 }
+                .font(.system(size: 11))
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
             .tint(viewModel.tapToSetMode ? .orange : .secondary)
             .disabled(!viewModel.document.hasFile)
 
-            // Import/Export
             Menu {
                 Button("Import LRC…", action: viewModel.importLRC)
                 Divider()
                 Button("Export LRC…", action: viewModel.exportLRC)
-                Button("Export Plain Text…", action: viewModel.exportPlainText)
+                Button("Export Text…", action: viewModel.exportPlainText)
                 Divider()
-                Button("Embed Lyrics in File…", action: viewModel.embedLyrics)
+                Button("Embed in File…", action: viewModel.embedLyrics)
             } label: {
                 Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 13))
             }
             .menuStyle(.borderlessButton)
-            .frame(width: 40)
+            .frame(width: 30)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color(NSColor.windowBackgroundColor))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(NSColor.controlBackgroundColor).opacity(0.5))
     }
 
     private func formatTime(_ time: TimeInterval) -> String {

@@ -14,7 +14,10 @@ class AudioEngine: ObservableObject {
     /// Called every tick during playback with the current time
     var onTimeUpdate: ((TimeInterval) -> Void)?
 
-    /// Load an audio file and extract waveform + duration
+    // Timer tracking state
+    private var timerStartTime: Date = Date()
+    private var timerStartOffset: TimeInterval = 0
+
     func loadFile(url: URL) async throws -> (waveform: [Float], duration: TimeInterval) {
         let file = try AVAudioFile(forReading: url)
         self.audioFile = file
@@ -26,13 +29,13 @@ class AudioEngine: ObservableObject {
         }
         try file.read(into: buffer)
 
-        let duration = Double(file.length) / format.sampleRate
-        self.duration = duration
+        let dur = Double(file.length) / format.sampleRate
+        self.duration = dur
 
-        // Extract waveform: downsample to ~1000 points
+        // Extract waveform: downsample to ~200 points (was 1000 — too many)
         let samples = buffer.floatChannelData![0]
         let totalFrames = Int(frameCount)
-        let targetSampleCount = 1000
+        let targetSampleCount = 200
         let samplesPerBlock = max(1, totalFrames / targetSampleCount)
         var waveform = [Float](repeating: 0, count: targetSampleCount)
 
@@ -46,15 +49,13 @@ class AudioEngine: ObservableObject {
             waveform[i] = maxVal
         }
 
-        // Normalize
         if let max = waveform.max(), max > 0 {
             waveform = waveform.map { $0 / max }
         }
 
-        // Setup audio engine
         setupAudioEngine(format: format)
 
-        return (waveform, duration)
+        return (waveform, dur)
     }
 
     private func setupAudioEngine(format: AVAudioFormat) {
@@ -74,20 +75,20 @@ class AudioEngine: ObservableObject {
         playerNode.scheduleFile(file, at: nil)
         playerNode.play()
         isPlaying = true
-        startTimeTimer()
+        startTimer()
     }
 
     func pause() {
         playerNode.pause()
         isPlaying = false
-        stopTimeTimer()
+        stopTimer()
     }
 
     func stop() {
         playerNode.stop()
         isPlaying = false
         currentTime = 0
-        stopTimeTimer()
+        stopTimer()
     }
 
     func seek(to time: TimeInterval) {
@@ -100,23 +101,29 @@ class AudioEngine: ObservableObject {
         let framesToPlay = AVAudioFrameCount(file.length - framePosition)
 
         playerNode.scheduleSegment(file, startingFrame: framePosition, frameCount: framesToPlay, at: nil)
+
+        currentTime = time
+
         if wasPlaying {
             playerNode.play()
+            // Reset the timer so playhead position is calculated from the new position
+            restartTimer()
+        } else {
+            stopTimer()
         }
-        currentTime = time
     }
 
-    // MARK: - Time Tracking
+    // MARK: - Timer
 
-    private func startTimeTimer() {
-        stopTimeTimer()
-        let startTime = Date()
-        let startOffset = currentTime
+    private func startTimer() {
+        stopTimer()
+        timerStartTime = Date()
+        timerStartOffset = currentTime
 
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             if self.playerNode.isPlaying {
-                self.currentTime = startOffset + Date().timeIntervalSince(startTime)
+                self.currentTime = self.timerStartOffset + Date().timeIntervalSince(self.timerStartTime)
                 self.onTimeUpdate?(self.currentTime)
                 if self.currentTime >= self.duration {
                     self.stop()
@@ -125,13 +132,31 @@ class AudioEngine: ObservableObject {
         }
     }
 
-    private func stopTimeTimer() {
+    private func restartTimer() {
+        // Reset timer base to current seek position
+        stopTimer()
+        timerStartTime = Date()
+        timerStartOffset = currentTime
+
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            if self.playerNode.isPlaying {
+                self.currentTime = self.timerStartOffset + Date().timeIntervalSince(self.timerStartTime)
+                self.onTimeUpdate?(self.currentTime)
+                if self.currentTime >= self.duration {
+                    self.stop()
+                }
+            }
+        }
+    }
+
+    private func stopTimer() {
         timer?.invalidate()
         timer = nil
     }
 
     deinit {
-        stopTimeTimer()
+        stopTimer()
         audioEngine.stop()
     }
 }
