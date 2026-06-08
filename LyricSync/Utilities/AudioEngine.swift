@@ -32,10 +32,10 @@ class AudioEngine: ObservableObject {
         let dur = Double(file.length) / format.sampleRate
         self.duration = dur
 
-        // Extract waveform: downsample to ~200 points (was 1000 — too many)
+        // Extract waveform: downsample to ~500 points for smooth display
         let samples = buffer.floatChannelData![0]
         let totalFrames = Int(frameCount)
-        let targetSampleCount = 200
+        let targetSampleCount = 500
         let samplesPerBlock = max(1, totalFrames / targetSampleCount)
         var waveform = [Float](repeating: 0, count: targetSampleCount)
 

@@ -148,21 +148,28 @@ struct WaveformView: View {
         let step = width / CGFloat(data.count)
         let waveColor = Color.accentColor.opacity(0.5)
 
-        // Draw as a single connected path instead of individual rects
+        // Draw as a smooth filled area path (mirrored around center)
         var path = Path()
         path.move(to: CGPoint(x: 0, y: midY))
 
+        // Top edge (positive amplitudes)
         for (i, amplitude) in data.enumerated() {
             let x = CGFloat(i) * step
             let barHeight = CGFloat(amplitude) * (height * 0.75)
-            path.addRect(CGRect(
-                x: x,
-                y: midY - barHeight / 2,
-                width: max(step, 0.5),
-                height: barHeight
-            ))
+            path.addLine(to: CGPoint(x: x, y: midY - barHeight / 2))
         }
 
+        // Right edge down to center
+        path.addLine(to: CGPoint(x: width, y: midY))
+
+        // Bottom edge (negative amplitudes, mirrored)
+        for i in stride(from: data.count - 1, through: 0, by: -1) {
+            let x = CGFloat(i) * step
+            let barHeight = CGFloat(data[i]) * (height * 0.75)
+            path.addLine(to: CGPoint(x: x, y: midY + barHeight / 2))
+        }
+
+        path.closeSubpath()
         context.fill(path, with: .color(waveColor))
     }
 
