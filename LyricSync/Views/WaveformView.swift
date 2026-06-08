@@ -221,7 +221,7 @@ struct WaveformView: View {
         // Check if tapped near existing lyric marker
         for lyric in viewModel.document.lyrics {
             let x = CGFloat(lyric.timestamp / duration) * geometry.size.width
-            if abs(location.x - x) < 10 {
+            if abs(location.x - x) < 20 {
                 viewModel.selectedLyricId = lyric.id
                 viewModel.audioEngine.seek(to: lyric.timestamp)
                 return
@@ -235,24 +235,12 @@ struct WaveformView: View {
         let duration = viewModel.document.duration
         guard duration > 0 else { return }
 
-        let playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * geometry.size.width
-
-        if !isDraggingPlayhead && abs(value.startLocation.x - playheadX) < 15 {
-            isDraggingPlayhead = true
-            dragPlayheadX = playheadX
-        }
-
-        if isDraggingPlayhead {
-            dragPlayheadX = max(0, min(value.location.x, geometry.size.width))
-            let time = Double(dragPlayheadX / geometry.size.width) * duration
-            viewModel.audioEngine.seek(to: max(0, min(time, duration)))
-            return
-        }
-
+        // First check if we're dragging a lyric marker (takes priority over playhead)
         if dragLyricId == nil {
+            let lyricThreshold: CGFloat = 20  // wider hit area
             for lyric in viewModel.document.lyrics {
                 let x = CGFloat(lyric.timestamp / duration) * geometry.size.width
-                if abs(value.startLocation.x - x) < 12 {
+                if abs(value.startLocation.x - x) < lyricThreshold {
                     dragLyricId = lyric.id
                     viewModel.selectedLyricId = lyric.id
                     viewModel.beginDragLyric(id: lyric.id)
@@ -263,6 +251,20 @@ struct WaveformView: View {
 
         if dragLyricId != nil {
             dragOffsetX = value.location.x - value.startLocation.x
+            return
+        }
+
+        // Then check if we're dragging the playhead
+        let playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * geometry.size.width
+        if !isDraggingPlayhead && abs(value.startLocation.x - playheadX) < 15 {
+            isDraggingPlayhead = true
+            dragPlayheadX = playheadX
+        }
+
+        if isDraggingPlayhead {
+            dragPlayheadX = max(0, min(value.location.x, geometry.size.width))
+            let time = Double(dragPlayheadX / geometry.size.width) * duration
+            viewModel.audioEngine.seek(to: max(0, min(time, duration)))
         }
     }
 

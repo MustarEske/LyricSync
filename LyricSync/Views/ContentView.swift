@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var viewModel = LyricSyncViewModel()
     @State private var isDragOver = false
+    @State private var sidebarWidth: CGFloat = 320
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,9 +18,23 @@ struct ContentView: View {
                     Divider()
                     TransportBar(viewModel: viewModel)
                 }
+
+                // Draggable divider
                 Divider()
+                    .background(Color(NSColor.separatorColor))
+                    .frame(width: 4)
+                    .onHover { cursor in
+                        NSCursor.resizeLeftRight.set()
+                    }
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                sidebarWidth = max(200, min(600, sidebarWidth + value.translation.width))
+                            }
+                    )
+
                 LyricListView(viewModel: viewModel)
-                    .frame(width: 300)
+                    .frame(width: sidebarWidth)
             }
             statusBar
         }

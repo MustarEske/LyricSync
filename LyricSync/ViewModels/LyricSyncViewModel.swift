@@ -456,17 +456,27 @@ class LyricSyncViewModel: ObservableObject {
 
         let request = SFSpeechURLRecognitionRequest(url: preparedURL)
         request.shouldReportPartialResults = true
+        // .search is better for short phrases/words, .dictation for long-form
+        // For song lyrics, .dictation captures more natural speech
         request.taskHint = SFSpeechRecognitionTaskHint.dictation
+        // On-device recognition is more reliable for music
+        if #available(macOS 13, *) {
+            request.requiresOnDeviceRecognition = false // allow server for better accuracy
+        }
 
-        // Use a thread-safe accumulator
-        var lastProcessed: TimeInterval = 0
+        // Collect ALL segments from final result — use a set to track unique ones
+        var collectedSegments: [(text: String, timestamp: TimeInterval)] = []
+        var seenTimestamps = Set<Int>()
         let lock = NSLock()
 
         let task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             if let error = error {
                 DispatchQueue.main.async {
                     self?.isTranscribing = false
-                    self?.errorMessage = "Transcription error: \(error.localizedDescription)"
+                    // Don't show cancellation as an error
+                    if (error as NSError).code != 216 { // kAFAssistantErrorDomain cancellation
+                        self?.errorMessage = "Transcription error: \(error.localizedDescription)"
+                    }
                 }
                 return
             }
@@ -476,31 +486,34 @@ class LyricSyncViewModel: ObservableObject {
             lock.lock()
             defer { lock.unlock() }
 
-            var segments: [(text: String, timestamp: TimeInterval)] = []
+            // Collect segments — less aggressive dedup (0.05s instead of 0.1s)
             for segment in result.bestTranscription.segments {
                 let text = segment.substring.trimmingCharacters(in: .whitespaces)
                 guard !text.isEmpty else { continue }
-                let ts = Double(segment.timestamp)
-                if ts > lastProcessed + 0.1 {
-                    segments.append((text: text, timestamp: ts))
-                    lastProcessed = ts
+                let tsKey = Int(segment.timestamp * 20) // 50ms buckets
+                if !seenTimestamps.contains(tsKey) {
+                    seenTimestamps.insert(tsKey)
+                    collectedSegments.append((text: segment.substring, timestamp: Double(segment.timestamp)))
                 }
             }
 
             DispatchQueue.main.async {
-                let progress = result.isFinal ? 1.0 : min(Double(result.bestTranscription.segments.count) * 0.05, 0.95)
-                self?.transcriptionProgress = progress
+                let segCount = result.bestTranscription.segments.count
+                self?.transcriptionProgress = result.isFinal ? 1.0 : min(Double(segCount) * 0.03, 0.95)
+                self?.transcriptionStatus = result.isFinal
+                    ? "Finalizing \(segCount) words…"
+                    : "Heard \(segCount) words…"
 
                 if result.isFinal {
                     self?.isTranscribing = false
-                    let lyrics = self?.groupSegments(segments) ?? []
+                    let lyrics = self?.groupSegments(collectedSegments) ?? []
                     if !lyrics.isEmpty {
                         self?.document.replaceLyrics(lyrics)
                         self?.document.rawTextLines = lyrics.map { $0.text }
                         self?.document.nextLineIndex = lyrics.count
-                        self?.transcriptionStatus = "✅ Found \(lyrics.count) lyric lines"
+                        self?.transcriptionStatus = "✅ Found \(lyrics.count) lines from \(segCount) words"
                     } else {
-                        self?.errorMessage = "No speech detected in audio. The file may be instrumental or too quiet."
+                        self?.errorMessage = "No speech detected. The file may be instrumental or in an unsupported language."
                         self?.transcriptionStatus = ""
                     }
                 }
