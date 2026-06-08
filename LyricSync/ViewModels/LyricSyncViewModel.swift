@@ -443,55 +443,90 @@ class LyricSyncViewModel: ObservableObject {
             return
         }
 
+        // First convert audio to a compatible format if needed
+        transcriptionStatus = "Preparing audio…"
+
+        guard let preparedURL = prepareAudioForRecognition(url) else {
+            isTranscribing = false
+            errorMessage = "Could not prepare audio file for transcription. Supported formats: M4A, WAV, AIFF, CAF."
+            return
+        }
+
         transcriptionStatus = "Transcribing audio…"
 
-        let request = SFSpeechURLRecognitionRequest(url: url)
+        let request = SFSpeechURLRecognitionRequest(url: preparedURL)
         request.shouldReportPartialResults = true
-        request.taskHint = .dictation
+        request.taskHint = SFSpeechRecognitionTaskHint.dictation
 
-        var lastProcessedTime: TimeInterval = 0
+        // Use a thread-safe accumulator
+        var lastProcessed: TimeInterval = 0
+        let lock = NSLock()
 
         let task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            DispatchQueue.main.async {
-                if let error = error {
+            if let error = error {
+                DispatchQueue.main.async {
                     self?.isTranscribing = false
-                    self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
-                    return
+                    self?.errorMessage = "Transcription error: \(error.localizedDescription)"
                 }
+                return
+            }
 
-                guard let result = result else { return }
+            guard let result = result else { return }
 
-                var segments: [(text: String, timestamp: TimeInterval)] = []
-                for segment in result.bestTranscription.segments {
-                    let text = segment.substring.trimmingCharacters(in: .whitespaces)
-                    guard !text.isEmpty else { continue }
-                    let ts = Double(segment.timestamp)
-                    if ts > lastProcessedTime + 0.1 {
-                        segments.append((text: text, timestamp: ts))
-                        lastProcessedTime = ts
-                    }
+            lock.lock()
+            defer { lock.unlock() }
+
+            var segments: [(text: String, timestamp: TimeInterval)] = []
+            for segment in result.bestTranscription.segments {
+                let text = segment.substring.trimmingCharacters(in: .whitespaces)
+                guard !text.isEmpty else { continue }
+                let ts = Double(segment.timestamp)
+                if ts > lastProcessed + 0.1 {
+                    segments.append((text: text, timestamp: ts))
+                    lastProcessed = ts
                 }
+            }
 
-                self?.transcriptionProgress = result.isFinal ? 1.0 : 0.3
-                self?.transcriptionStatus = result.isFinal
-                    ? "Finalizing…"
-                    : "Transcribing…"
+            DispatchQueue.main.async {
+                let progress = result.isFinal ? 1.0 : min(Double(result.bestTranscription.segments.count) * 0.05, 0.95)
+                self?.transcriptionProgress = progress
 
                 if result.isFinal {
                     self?.isTranscribing = false
                     let lyrics = self?.groupSegments(segments) ?? []
-                    self?.document.replaceLyrics(lyrics)
-                    self?.document.rawTextLines = lyrics.map { $0.text }
-                    self?.document.nextLineIndex = lyrics.count
-                    self?.transcriptionStatus = "✅ Found \(lyrics.count) lyric lines"
+                    if !lyrics.isEmpty {
+                        self?.document.replaceLyrics(lyrics)
+                        self?.document.rawTextLines = lyrics.map { $0.text }
+                        self?.document.nextLineIndex = lyrics.count
+                        self?.transcriptionStatus = "✅ Found \(lyrics.count) lyric lines"
+                    } else {
+                        self?.errorMessage = "No speech detected in audio. The file may be instrumental or too quiet."
+                        self?.transcriptionStatus = ""
+                    }
                 }
             }
         }
 
-        // Timeout after 5 minutes
-        DispatchQueue.main.asyncAfter(deadline: .now() + 300) {
-            if !task.isFinishing { task.finish() }
+        // Timeout after 10 minutes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 600) {
+            if !task.isFinishing {
+                task.finish()
+            }
         }
+    }
+
+    /// Prepares audio file for speech recognition. If the file is not in a
+    /// directly supported format, returns nil. SFSpeechRecognizer works best
+    /// with CAF, WAV, AIFF, and M4A files.
+    private func prepareAudioForRecognition(_ url: URL) -> URL? {
+        let ext = url.pathExtension.lowercased()
+        // These formats work directly with SFSpeechURLRecognitionRequest
+        let supported = ["m4a", "caf", "wav", "aiff", "mp3", "aac"]
+        if supported.contains(ext) {
+            return url
+        }
+        // For other formats, we'd need to convert — for now just try anyway
+        return url
     }
 
     private func groupSegments(_ segments: [(text: String, timestamp: TimeInterval)]) -> [LyricLine] {

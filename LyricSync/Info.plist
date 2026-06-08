@@ -26,5 +26,9 @@
     <string>NSApplication</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>LyricSync needs access to play audio files.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>LyricSync uses speech recognition to detect lyrics from audio files.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>LyricSync uses speech recognition to detect lyrics from audio files.</string>
 </dict>
 </plist>
