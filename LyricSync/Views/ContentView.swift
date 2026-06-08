@@ -35,6 +35,27 @@ struct ContentView: View {
                     .allowsHitTesting(true)
             }
         }
+        .overlay(alignment: .center) {
+            if viewModel.isTranscribing {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                    Text("Auto-Detecting Lyrics")
+                        .font(.headline)
+                    Text(viewModel.transcriptionStatus)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    ProgressView(value: viewModel.transcriptionProgress)
+                        .frame(width: 200)
+                }
+                .padding(24)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(.regularMaterial)
+                        .shadow(radius: 8)
+                )
+            }
+        }
         .overlay {
             if isDragOver {
                 RoundedRectangle(cornerRadius: 12)
@@ -105,6 +126,12 @@ struct ContentView: View {
                 Label("Import LRC", systemImage: "doc.text")
             }
             .keyboardShortcut("i", modifiers: .command)
+
+            Button(action: { viewModel.autoTranscribe() }) {
+                Label("Auto Lyrics", systemImage: "waveform")
+            }
+            .disabled(!viewModel.canAutoTranscribe)
+            .help("Auto-detect lyrics from audio")
 
             Button(action: { viewModel.showAppearancePicker() }) {
                 Image(systemName: "circle.lefthalf.filled")

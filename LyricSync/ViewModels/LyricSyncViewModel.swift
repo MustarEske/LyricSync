@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import UniformTypeIdentifiers
+import Speech
 
 // MARK: - Undo Action
 
@@ -402,6 +403,122 @@ class LyricSyncViewModel: ObservableObject {
         } else {
             audioEngine.play()
         }
+    }
+
+    // MARK: - Auto Transcribe
+
+    @Published var isTranscribing = false
+    @Published var transcriptionProgress: Double = 0
+    @Published var transcriptionStatus: String = ""
+
+    var canAutoTranscribe: Bool {
+        document.hasFile && !isTranscribing
+    }
+
+    func autoTranscribe() {
+        guard let url = document.fileURL else { return }
+
+        isTranscribing = true
+        transcriptionProgress = 0
+        transcriptionStatus = "Requesting permission…"
+
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
+            DispatchQueue.main.async {
+                guard status == .authorized else {
+                    self?.isTranscribing = false
+                    self?.errorMessage = "Speech recognition not authorized. Enable in System Settings > Privacy & Security > Speech Recognition."
+                    return
+                }
+
+                self?.performTranscription(url: url)
+            }
+        }
+    }
+
+    private func performTranscription(url: URL) {
+        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+              recognizer.isAvailable else {
+            isTranscribing = false
+            errorMessage = "Speech recognizer not available."
+            return
+        }
+
+        transcriptionStatus = "Transcribing audio…"
+
+        let request = SFSpeechURLRecognitionRequest(url: url)
+        request.shouldReportPartialResults = true
+        request.taskHint = .dictation
+
+        var lastProcessedTime: TimeInterval = 0
+
+        let task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self?.isTranscribing = false
+                    self?.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                    return
+                }
+
+                guard let result = result else { return }
+
+                var segments: [(text: String, timestamp: TimeInterval)] = []
+                for segment in result.bestTranscription.segments {
+                    let text = segment.substring.trimmingCharacters(in: .whitespaces)
+                    guard !text.isEmpty else { continue }
+                    let ts = Double(segment.timestamp)
+                    if ts > lastProcessedTime + 0.1 {
+                        segments.append((text: text, timestamp: ts))
+                        lastProcessedTime = ts
+                    }
+                }
+
+                self?.transcriptionProgress = result.isFinal ? 1.0 : 0.3
+                self?.transcriptionStatus = result.isFinal
+                    ? "Finalizing…"
+                    : "Transcribing…"
+
+                if result.isFinal {
+                    self?.isTranscribing = false
+                    let lyrics = self?.groupSegments(segments) ?? []
+                    self?.document.replaceLyrics(lyrics)
+                    self?.document.rawTextLines = lyrics.map { $0.text }
+                    self?.document.nextLineIndex = lyrics.count
+                    self?.transcriptionStatus = "✅ Found \(lyrics.count) lyric lines"
+                }
+            }
+        }
+
+        // Timeout after 5 minutes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 300) {
+            if !task.isFinishing { task.finish() }
+        }
+    }
+
+    private func groupSegments(_ segments: [(text: String, timestamp: TimeInterval)]) -> [LyricLine] {
+        guard !segments.isEmpty else { return [] }
+
+        var lines: [LyricLine] = []
+        var currentWords: [String] = []
+        var lineStart: TimeInterval = segments[0].timestamp
+        var lastTs: TimeInterval = segments[0].timestamp
+
+        for seg in segments {
+            if seg.timestamp - lastTs > 1.5 && !currentWords.isEmpty {
+                let text = currentWords.joined(separator: " ")
+                if !text.isEmpty { lines.append(LyricLine(timestamp: lineStart, text: text)) }
+                currentWords = []
+                lineStart = seg.timestamp
+            }
+            currentWords.append(seg.text)
+            lastTs = seg.timestamp
+        }
+
+        if !currentWords.isEmpty {
+            let text = currentWords.joined(separator: " ")
+            if !text.isEmpty { lines.append(LyricLine(timestamp: lineStart, text: text)) }
+        }
+
+        return lines
     }
 
     /// Cycle appearance: system → dark → light → system
