@@ -92,6 +92,9 @@ struct ContentView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDragOver) { providers in
             handleDrop(providers: providers)
         }
+        .sheet(isPresented: $viewModel.isShowingGeniusSearch) {
+            geniusSearchSheet
+        }
     }
 
     // MARK: - Drag and Drop
@@ -148,6 +151,11 @@ struct ContentView: View {
             .disabled(!viewModel.canAutoTranscribe)
             .help("Auto-detect lyrics from audio")
 
+            Button(action: { viewModel.showGeniusSearch() }) {
+                Label("Search Genius", systemImage: "magnifyingglass")
+            }
+            .help("Search for lyrics on Genius")
+
             Button(action: { viewModel.showAppearancePicker() }) {
                 Image(systemName: "circle.lefthalf.filled")
             }
@@ -202,5 +210,90 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    // MARK: - Genius Search Sheet
+
+    private var geniusSearchSheet: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Search Genius")
+                    .font(.headline)
+                Spacer()
+                Button("Close") {
+                    viewModel.isShowingGeniusSearch = false
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding()
+
+            Divider()
+
+            // Search bar
+            HStack {
+                TextField("Song title or artist…", text: $viewModel.geniusSearchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { viewModel.searchGenius() }
+
+                Button(action: { viewModel.searchGenius() }) {
+                    if viewModel.isSearchingGenius {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "magnifyingglass")
+                    }
+                }
+                .disabled(viewModel.isSearchingGenius || viewModel.geniusSearchQuery.isEmpty)
+            }
+            .padding()
+
+            if let error = viewModel.geniusSearchError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.horizontal)
+            }
+
+            Divider()
+
+            // Results
+            if viewModel.geniusSearchResults.isEmpty && !viewModel.isSearchingGenius {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 32))
+                        .foregroundColor(.secondary)
+                    Text("Search for lyrics on Genius")
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(viewModel.geniusSearchResults) { result in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(result.title)
+                                .font(.system(size: 13, weight: .medium))
+                            Text(result.artist)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if viewModel.isImportingGenius {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Button("Import") {
+                                viewModel.importGeniusLyrics(result)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .frame(width: 480, height: 400)
     }
 }

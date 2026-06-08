@@ -443,29 +443,16 @@ class LyricSyncViewModel: ObservableObject {
             return
         }
 
-        // First convert audio to a compatible format if needed
-        transcriptionStatus = "Preparing audio…"
+        transcriptionStatus = "Transcribing…"
 
-        guard let preparedURL = prepareAudioForRecognition(url) else {
-            isTranscribing = false
-            errorMessage = "Could not prepare audio file for transcription. Supported formats: M4A, WAV, AIFF, CAF."
-            return
-        }
-
-        transcriptionStatus = "Transcribing audio…"
-
-        let request = SFSpeechURLRecognitionRequest(url: preparedURL)
+        let request = SFSpeechURLRecognitionRequest(url: url)
         request.shouldReportPartialResults = true
-        // .search is better for short phrases/words, .dictation for long-form
-        // For song lyrics, .dictation captures more natural speech
-        request.taskHint = SFSpeechRecognitionTaskHint.dictation
-        // On-device recognition is more reliable for music
-        if #available(macOS 13, *) {
-            request.requiresOnDeviceRecognition = false // allow server for better accuracy
-        }
+        // .search is better for short phrases and individual words
+        // .dictation is for long-form natural speech
+        // For song lyrics with music, .search often captures more individual words
+        request.taskHint = SFSpeechRecognitionTaskHint.search
 
-        // Collect ALL segments from final result — use a set to track unique ones
-        var collectedSegments: [(text: String, timestamp: TimeInterval)] = []
+        var allSegments: [(text: String, timestamp: TimeInterval)] = []
         var seenTimestamps = Set<Int>()
         let lock = NSLock()
 
@@ -473,8 +460,9 @@ class LyricSyncViewModel: ObservableObject {
             if let error = error {
                 DispatchQueue.main.async {
                     self?.isTranscribing = false
-                    // Don't show cancellation as an error
-                    if (error as NSError).code != 216 { // kAFAssistantErrorDomain cancellation
+                    let nsError = error as NSError
+                    // Don't report cancellation as error
+                    if nsError.code != 216 && nsError.domain != "kAFAssistantErrorDomain" {
                         self?.errorMessage = "Transcription error: \(error.localizedDescription)"
                     }
                 }
@@ -486,34 +474,35 @@ class LyricSyncViewModel: ObservableObject {
             lock.lock()
             defer { lock.unlock() }
 
-            // Collect segments — less aggressive dedup (0.05s instead of 0.1s)
+            // Collect ALL segments — use 25ms buckets for finer dedup
             for segment in result.bestTranscription.segments {
                 let text = segment.substring.trimmingCharacters(in: .whitespaces)
                 guard !text.isEmpty else { continue }
-                let tsKey = Int(segment.timestamp * 20) // 50ms buckets
+                // Use 25ms buckets (40 per second) — much finer than 50ms
+                let tsKey = Int(segment.timestamp * 40)
                 if !seenTimestamps.contains(tsKey) {
                     seenTimestamps.insert(tsKey)
-                    collectedSegments.append((text: segment.substring, timestamp: Double(segment.timestamp)))
+                    allSegments.append((text: segment.substring, timestamp: Double(segment.timestamp)))
                 }
             }
 
             DispatchQueue.main.async {
                 let segCount = result.bestTranscription.segments.count
-                self?.transcriptionProgress = result.isFinal ? 1.0 : min(Double(segCount) * 0.03, 0.95)
+                self?.transcriptionProgress = result.isFinal ? 1.0 : min(Double(segCount) * 0.02, 0.95)
                 self?.transcriptionStatus = result.isFinal
                     ? "Finalizing \(segCount) words…"
                     : "Heard \(segCount) words…"
 
                 if result.isFinal {
                     self?.isTranscribing = false
-                    let lyrics = self?.groupSegments(collectedSegments) ?? []
+                    let lyrics = self?.groupSegments(allSegments) ?? []
                     if !lyrics.isEmpty {
                         self?.document.replaceLyrics(lyrics)
                         self?.document.rawTextLines = lyrics.map { $0.text }
                         self?.document.nextLineIndex = lyrics.count
                         self?.transcriptionStatus = "✅ Found \(lyrics.count) lines from \(segCount) words"
                     } else {
-                        self?.errorMessage = "No speech detected. The file may be instrumental or in an unsupported language."
+                        self?.errorMessage = "No speech detected. Try a file with clearer vocals."
                         self?.transcriptionStatus = ""
                     }
                 }
@@ -522,24 +511,8 @@ class LyricSyncViewModel: ObservableObject {
 
         // Timeout after 10 minutes
         DispatchQueue.main.asyncAfter(deadline: .now() + 600) {
-            if !task.isFinishing {
-                task.finish()
-            }
+            if !task.isFinishing { task.finish() }
         }
-    }
-
-    /// Prepares audio file for speech recognition. If the file is not in a
-    /// directly supported format, returns nil. SFSpeechRecognizer works best
-    /// with CAF, WAV, AIFF, and M4A files.
-    private func prepareAudioForRecognition(_ url: URL) -> URL? {
-        let ext = url.pathExtension.lowercased()
-        // These formats work directly with SFSpeechURLRecognitionRequest
-        let supported = ["m4a", "caf", "wav", "aiff", "mp3", "aac"]
-        if supported.contains(ext) {
-            return url
-        }
-        // For other formats, we'd need to convert — for now just try anyway
-        return url
     }
 
     private func groupSegments(_ segments: [(text: String, timestamp: TimeInterval)]) -> [LyricLine] {
@@ -572,5 +545,163 @@ class LyricSyncViewModel: ObservableObject {
     /// Cycle appearance: system → dark → light → system
     func showAppearancePicker() {
         NotificationCenter.default.post(name: .toggleAppearance, object: nil)
+    }
+
+    // MARK: - Genius Search
+
+    @Published var isShowingGeniusSearch = false
+    @Published var geniusSearchQuery = ""
+    @Published var geniusSearchResults: [GeniusSong] = []
+    @Published var isSearchingGenius = false
+    @Published var geniusSearchError: String?
+    @Published var isImportingGenius = false
+
+    struct GeniusSong: Identifiable {
+        let id = UUID()
+        let title: String
+        let artist: String
+        let url: String
+    }
+
+    func showGeniusSearch() {
+        geniusSearchQuery = document.fileName
+            .replacingOccurrences(of: ".mp3", with: "")
+            .replacingOccurrences(of: ".m4a", with: "")
+            .replacingOccurrences(of: ".wav", with: "")
+            .replacingOccurrences(of: ".aac", with: "")
+        isShowingGeniusSearch = true
+        geniusSearchResults = []
+        geniusSearchError = nil
+    }
+
+    func searchGenius() {
+        guard !geniusSearchQuery.isEmpty else { return }
+        isSearchingGenius = true
+        geniusSearchError = nil
+
+        let query = geniusSearchQuery
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let urlString = "https://genius.com/api/search/song?q=\(encoded)&per_page=5"
+
+        guard let url = URL(string: urlString) else {
+            isSearchingGenius = false
+            geniusSearchError = "Invalid search URL"
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                self?.isSearchingGenius = false
+                if let error = error {
+                    self?.geniusSearchError = "Network error: \(error.localizedDescription)"
+                    return
+                }
+                guard let data = data else {
+                    self?.geniusSearchError = "No data received"
+                    return
+                }
+                do {
+                    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let response = json["response"] as? [String: Any],
+                          let sections = response["sections"] as? [[String: Any]] else {
+                        self?.geniusSearchError = "Could not parse response"
+                        return
+                    }
+                    var songs: [GeniusSong] = []
+                    for section in sections {
+                        guard let hits = section["hits"] as? [[String: Any]] else { continue }
+                        for hit in hits {
+                            guard let result = hit["result"] as? [String: Any],
+                                  let title = result["title"] as? String,
+                                  let songURL = result["url"] as? String else { continue }
+                            let artistDict = result["primary_artist"] as? [String: Any]
+                            let artistName = artistDict?["name"] as? String ?? "Unknown"
+                            songs.append(GeniusSong(title: title, artist: artistName, url: songURL))
+                        }
+                    }
+                    if songs.isEmpty {
+                        self?.geniusSearchError = "No results found"
+                    } else {
+                        self?.geniusSearchResults = songs
+                    }
+                } catch {
+                    self?.geniusSearchError = "Parse error"
+                }
+            }
+        }.resume()
+    }
+
+    func importGeniusLyrics(_ song: GeniusSong) {
+        isImportingGenius = true
+        geniusSearchError = nil
+
+        guard let url = URL(string: song.url) else {
+            isImportingGenius = false
+            geniusSearchError = "Invalid URL"
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                self?.isImportingGenius = false
+                if let error = error {
+                    self?.geniusSearchError = "Network error: \(error.localizedDescription)"
+                    return
+                }
+                guard let data = data, let html = String(data: data, encoding: .utf8) else {
+                    self?.geniusSearchError = "No data received"
+                    return
+                }
+                let lyrics = Self.extractLyricsFromHTML(html)
+                if lyrics.isEmpty {
+                    self?.geniusSearchError = "Could not extract lyrics from page"
+                } else {
+                    // Check if it looks like an LRC file or plain text
+                    let hasTimestamps = lyrics.contains("[00:") || lyrics.contains("[01:")
+                    let ext = hasTimestamps ? "lrc" : "txt"
+                    self?.document.importText(content: lyrics, fileExtension: ext)
+                    self?.isShowingGeniusSearch = false
+                }
+            }
+        }.resume()
+    }
+
+    private static func extractLyricsFromHTML(_ html: String) -> String {
+        var lines: [String] = []
+        // Try data-lyrics-container pattern
+        let patterns = [
+            #"<div[^>]*data-lyrics-container="true"[^>]*>(.*?)</div>"#,
+            #"<div[^>]*class="[^"]*Lyrics__Container[^"]*"[^>]*>(.*?)</div>"#,
+            #"<div[^>]*class="[^"]*lyrics[^"]*"[^>]*>(.*?)</div>"#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { continue }
+            let range = NSRange(html.startIndex..., in: html)
+            for match in regex.matches(in: html, range: range) {
+                guard let textRange = Range(match.range(at: 1), in: html) else { continue }
+                var text = String(html[textRange])
+                // Strip HTML tags
+                if let tagRegex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
+                    text = tagRegex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+                }
+                // Decode entities
+                text = text.replacingOccurrences(of: "&amp;", with: "&")
+                    .replacingOccurrences(of: "&lt;", with: "<")
+                    .replacingOccurrences(of: "&gt;", with: ">")
+                    .replacingOccurrences(of: "&quot;", with: "\"")
+                    .replacingOccurrences(of: "&#x27;", with: "'")
+                    .replacingOccurrences(of: "&nbsp;", with: " ")
+                text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { lines.append(text) }
+            }
+            if !lines.isEmpty { break }
+        }
+        return lines.joined(separator: "\n")
     }
 }
