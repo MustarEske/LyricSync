@@ -673,35 +673,49 @@ class LyricSyncViewModel: ObservableObject {
     }
 
     private static func extractLyricsFromHTML(_ html: String) -> String {
-        var lines: [String] = []
-        // Try data-lyrics-container pattern
-        let patterns = [
-            #"<div[^>]*data-lyrics-container="true"[^>]*>(.*?)</div>"#,
-            #"<div[^>]*class="[^"]*Lyrics__Container[^"]*"[^>]*>(.*?)</div>"#,
-            #"<div[^>]*class="[^"]*lyrics[^"]*"[^>]*>(.*?)</div>"#
-        ]
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { continue }
-            let range = NSRange(html.startIndex..., in: html)
-            for match in regex.matches(in: html, range: range) {
-                guard let textRange = Range(match.range(at: 1), in: html) else { continue }
-                var text = String(html[textRange])
-                // Strip HTML tags
-                if let tagRegex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
-                    text = tagRegex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
-                }
-                // Decode entities
-                text = text.replacingOccurrences(of: "&amp;", with: "&")
-                    .replacingOccurrences(of: "&lt;", with: "<")
-                    .replacingOccurrences(of: "&gt;", with: ">")
-                    .replacingOccurrences(of: "&quot;", with: "\"")
-                    .replacingOccurrences(of: "&#x27;", with: "'")
-                    .replacingOccurrences(of: "&nbsp;", with: " ")
-                text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty { lines.append(text) }
-            }
-            if !lines.isEmpty { break }
+        var resultChunks: [String] = []
+
+        // Genius lyrics are in divs with data-lyrics-container="true"
+        // Each div is a verse/section. Within each, <br> tags separate lines.
+        let containerPattern = #"<div[^>]*data-lyrics-container="true"[^>]*>(.*?)</div>"#
+        guard let containerRegex = try? NSRegularExpression(pattern: containerPattern, options: [.dotMatchesLineSeparators]) else {
+            return ""
         }
-        return lines.joined(separator: "\n")
+
+        let range = NSRange(html.startIndex..., in: html)
+        let matches = containerRegex.matches(in: html, range: range)
+
+        for match in matches {
+            guard let textRange = Range(match.range(at: 1), in: html) else { continue }
+            var text = String(html[textRange])
+
+            // Convert <br> tags to newlines BEFORE stripping other tags
+            text = text.replacingOccurrences(of: "<br>", with: "\n")
+            text = text.replacingOccurrences(of: "<br/>", with: "\n")
+            text = text.replacingOccurrences(of: "<br />", with: "\n")
+
+            // Strip remaining HTML tags
+            if let tagRegex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
+                text = tagRegex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+            }
+
+            // Decode HTML entities
+            text = text.replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&quot;", with: "\"")
+                .replacingOccurrences(of: "&#x27;", with: "'")
+                .replacingOccurrences(of: "&nbsp;", with: " ")
+
+            // Split on newlines and add non-empty lines
+            for line in text.components(separatedBy: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty {
+                    resultChunks.append(trimmed)
+                }
+            }
+        }
+
+        return resultChunks.joined(separator: "\n")
     }
 }

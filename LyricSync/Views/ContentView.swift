@@ -19,11 +19,10 @@ struct ContentView: View {
                     TransportBar(viewModel: viewModel)
                 }
 
-                // Draggable divider
-                Divider()
-                    .background(Color(NSColor.separatorColor))
+                // Draggable sidebar divider
+                Color(NSColor.separatorColor)
                     .frame(width: 4)
-                    .onHover { cursor in
+                    .onHover { _ in
                         NSCursor.resizeLeftRight.set()
                     }
                     .gesture(

@@ -109,8 +109,8 @@ struct WaveformView: View {
             }
             .clipped()
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         handleDragChanged(value: value, geometry: geometry)
                     }
