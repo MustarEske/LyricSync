@@ -12,6 +12,8 @@ struct WaveformView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
+                // Canvas uses drawingGroup() for GPU-accelerated rendering
+                // The waveform path is cached; only overlays change during drag
                 Canvas { context, size in
                     let width = size.width
                     let height = size.height
@@ -108,6 +110,7 @@ struct WaveformView: View {
                         with: .color(.accentColor)
                     )
                 }
+                .drawingGroup()  // GPU-accelerated rendering for the Canvas
 
                 // Transparent overlay for gesture handling — Canvas swallows gestures
                 Color.clear
@@ -120,6 +123,10 @@ struct WaveformView: View {
                             .onEnded { value in
                                 handleDragEnded(value: value, geometry: geometry)
                             }
+                    )
+                    .simultaneousGesture(
+                        TapGesture()
+                            .onEnded { _ in }
                     )
                     .onTapGesture { location in
                         handleTap(at: location, geometry: geometry)

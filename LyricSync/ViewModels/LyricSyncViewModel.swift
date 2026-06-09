@@ -447,12 +447,18 @@ class LyricSyncViewModel: ObservableObject {
 
         let request = SFSpeechURLRecognitionRequest(url: url)
         request.shouldReportPartialResults = true
-        // .search is better for short phrases and individual words
-        // .dictation is for long-form natural speech
-        // For song lyrics with music, .search often captures more individual words
-        request.taskHint = SFSpeechRecognitionTaskHint.search
+        // .dictation is better for continuous speech / singing — it keeps
+        // listening and produces far more segments than .search which is
+        // designed for short spoken commands.
+        request.taskHint = .dictation
+        // Allow cloud recognition — more accurate than on-device
+        if #available(macOS 10.15, *) {
+            request.requiresOnDeviceRecognition = false
+        }
 
         var allSegments: [(text: String, timestamp: TimeInterval)] = []
+        // Use 10ms dedup buckets — very fine granularity to catch
+        // closely-spaced words that SFSpeech sometimes splits or repeats
         var seenTimestamps = Set<Int>()
         let lock = NSLock()
 
@@ -474,12 +480,12 @@ class LyricSyncViewModel: ObservableObject {
             lock.lock()
             defer { lock.unlock() }
 
-            // Collect ALL segments — use 25ms buckets for finer dedup
+            // Collect ALL segments — use 10ms buckets for very fine dedup
             for segment in result.bestTranscription.segments {
                 let text = segment.substring.trimmingCharacters(in: .whitespaces)
                 guard !text.isEmpty else { continue }
-                // Use 25ms buckets (40 per second) — much finer than 50ms
-                let tsKey = Int(segment.timestamp * 40)
+                // 10ms buckets (100 per second) — minimal dedup
+                let tsKey = Int(segment.timestamp * 100)
                 if !seenTimestamps.contains(tsKey) {
                     seenTimestamps.insert(tsKey)
                     allSegments.append((text: segment.substring, timestamp: Double(segment.timestamp)))
@@ -487,11 +493,10 @@ class LyricSyncViewModel: ObservableObject {
             }
 
             DispatchQueue.main.async {
-                let segCount = result.bestTranscription.segments.count
-                self?.transcriptionProgress = result.isFinal ? 1.0 : min(Double(segCount) * 0.02, 0.95)
+                self?.transcriptionProgress = result.isFinal ? 1.0 : min(Double(allSegments.count) * 0.01, 0.95)
                 self?.transcriptionStatus = result.isFinal
-                    ? "Finalizing \(segCount) words…"
-                    : "Heard \(segCount) words…"
+                    ? "Finalizing \(allSegments.count) words…"
+                    : "Heard \(allSegments.count) words…"
 
                 if result.isFinal {
                     self?.isTranscribing = false
@@ -500,7 +505,7 @@ class LyricSyncViewModel: ObservableObject {
                         self?.document.replaceLyrics(lyrics)
                         self?.document.rawTextLines = lyrics.map { $0.text }
                         self?.document.nextLineIndex = lyrics.count
-                        self?.transcriptionStatus = "✅ Found \(lyrics.count) lines from \(segCount) words"
+                        self?.transcriptionStatus = "✅ Found \(lyrics.count) lines from \(allSegments.count) words"
                     } else {
                         self?.errorMessage = "No speech detected. Try a file with clearer vocals."
                         self?.transcriptionStatus = ""
@@ -518,13 +523,18 @@ class LyricSyncViewModel: ObservableObject {
     private func groupSegments(_ segments: [(text: String, timestamp: TimeInterval)]) -> [LyricLine] {
         guard !segments.isEmpty else { return [] }
 
+        // Group words into lines based on natural pauses.
+        // For transcribed lyrics we combine short words until we hit
+        // a gap or reach ~8 words per line (typical lyric line length).
         var lines: [LyricLine] = []
         var currentWords: [String] = []
         var lineStart: TimeInterval = segments[0].timestamp
         var lastTs: TimeInterval = segments[0].timestamp
 
         for seg in segments {
-            if seg.timestamp - lastTs > 1.5 && !currentWords.isEmpty {
+            let gap = seg.timestamp - lastTs
+            // Start a new line on a long pause (>2s) or at ~8 words
+            if (gap > 2.0 || currentWords.count >= 8) && !currentWords.isEmpty {
                 let text = currentWords.joined(separator: " ")
                 if !text.isEmpty { lines.append(LyricLine(timestamp: lineStart, text: text)) }
                 currentWords = []
@@ -675,24 +685,69 @@ class LyricSyncViewModel: ObservableObject {
     private static func extractLyricsFromHTML(_ html: String) -> String {
         var resultChunks: [String] = []
 
-        // Genius lyrics are in divs with data-lyrics-container="true"
-        // Each div is a verse/section. Within each, <br> tags separate lines.
-        let containerPattern = #"<div[^>]*data-lyrics-container="true"[^>]*>(.*?)</div>"#
-        guard let containerRegex = try? NSRegularExpression(pattern: containerPattern, options: [.dotMatchesLineSeparators]) else {
-            return ""
-        }
+        // Genius wraps lyrics in <div data-lyrics-container="true"> ... </div>
+        // but there are nested divs inside, so simple (.*?) stops at the first </div>.
+        // Strategy: find each container opener, then find its matching closer by
+        // tracking div nesting depth — or just split on the container boundaries.
 
-        let range = NSRange(html.startIndex..., in: html)
-        let matches = containerRegex.matches(in: html, range: range)
+        let containerTag = "data-lyrics-container=\"true\""
+        var searchStart = html.startIndex
 
-        for match in matches {
-            guard let textRange = Range(match.range(at: 1), in: html) else { continue }
-            var text = String(html[textRange])
+        while searchStart < html.endIndex {
+            // Find next container opener
+            guard let openRange = html.range(of: containerTag, range: searchStart..<html.endIndex) else {
+                break
+            }
+            // Go back to the '<' of this div
+            guard let divStart = html[..<openRange.lowerBound].lastIndex(of: "<") else {
+                searchStart = openRange.upperBound
+                continue
+            }
+            // Find the '>' that opens this div
+            guard let divOpenEnd = html[divStart...].firstIndex(of: ">") else {
+                searchStart = openRange.upperBound
+                continue
+            }
+            let contentStart = html.index(after: divOpenEnd)
+
+            // Now find the matching </div> by tracking nesting
+            var depth = 1
+            var pos = contentStart
+            while pos < html.endIndex && depth > 0 {
+                if html[pos] == "<" {
+                    if html[pos...].hasPrefix("</div>") {
+                        depth -= 1
+                        if depth == 0 {
+                            break
+                        }
+                        pos = html.index(pos, offsetBy: 6)
+                        continue
+                    } else if html[pos...].hasPrefix("<div") {
+                        depth += 1
+                        // skip past this <div...>
+                        if let closeGT = html[pos...].firstIndex(of: ">") {
+                            pos = html.index(after: closeGT)
+                            continue
+                        }
+                    }
+                }
+                pos = html.index(after: pos)
+            }
+
+            guard depth == 0 else {
+                searchStart = openRange.upperBound
+                continue
+            }
+
+            // Extract content between the opening div and its matching closer
+            var text = String(html[contentStart..<pos])
 
             // Convert <br> tags to newlines BEFORE stripping other tags
             text = text.replacingOccurrences(of: "<br>", with: "\n")
             text = text.replacingOccurrences(of: "<br/>", with: "\n")
             text = text.replacingOccurrences(of: "<br />", with: "\n")
+            text = text.replacingOccurrences(of: "<Br>", with: "\n")
+            text = text.replacingOccurrences(of: "<BR>", with: "\n")
 
             // Strip remaining HTML tags
             if let tagRegex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
@@ -705,6 +760,7 @@ class LyricSyncViewModel: ObservableObject {
                 .replacingOccurrences(of: "&gt;", with: ">")
                 .replacingOccurrences(of: "&quot;", with: "\"")
                 .replacingOccurrences(of: "&#x27;", with: "'")
+                .replacingOccurrences(of: "&#39;", with: "'")
                 .replacingOccurrences(of: "&nbsp;", with: " ")
 
             // Split on newlines and add non-empty lines
@@ -713,6 +769,12 @@ class LyricSyncViewModel: ObservableObject {
                 if !trimmed.isEmpty {
                     resultChunks.append(trimmed)
                 }
+            }
+
+            // Continue searching after this container's closing </div>
+            searchStart = html.index(after: pos) // skip past the closing <
+            if searchStart < html.endIndex {
+                searchStart = html.index(searchStart, offsetBy: 5) // skip "div>"
             }
         }
 
