@@ -685,46 +685,39 @@ class LyricSyncViewModel: ObservableObject {
     private static func extractLyricsFromHTML(_ html: String) -> String {
         var resultChunks: [String] = []
 
-        // Genius wraps lyrics in <div data-lyrics-container="true"> ... </div>
-        // but there are nested divs inside, so simple (.*?) stops at the first </div>.
-        // Strategy: find each container opener, then find its matching closer by
-        // tracking div nesting depth — or just split on the container boundaries.
+        // Genius pages have multiple data-lyrics-container divs, plus lots of
+        // surrounding meta, contributor, translation divs.  We only want the
+        // actual lyric lines.
 
         let containerTag = "data-lyrics-container=\"true\""
         var searchStart = html.startIndex
 
         while searchStart < html.endIndex {
-            // Find next container opener
             guard let openRange = html.range(of: containerTag, range: searchStart..<html.endIndex) else {
                 break
             }
-            // Go back to the '<' of this div
             guard let divStart = html[..<openRange.lowerBound].lastIndex(of: "<") else {
                 searchStart = openRange.upperBound
                 continue
             }
-            // Find the '>' that opens this div
             guard let divOpenEnd = html[divStart...].firstIndex(of: ">") else {
                 searchStart = openRange.upperBound
                 continue
             }
             let contentStart = html.index(after: divOpenEnd)
 
-            // Now find the matching </div> by tracking nesting
+            // Find matching </div> by tracking depth
             var depth = 1
             var pos = contentStart
             while pos < html.endIndex && depth > 0 {
                 if html[pos] == "<" {
                     if html[pos...].hasPrefix("</div>") {
                         depth -= 1
-                        if depth == 0 {
-                            break
-                        }
+                        if depth == 0 { break }
                         pos = html.index(pos, offsetBy: 6)
                         continue
                     } else if html[pos...].hasPrefix("<div") {
                         depth += 1
-                        // skip past this <div...>
                         if let closeGT = html[pos...].firstIndex(of: ">") {
                             pos = html.index(after: closeGT)
                             continue
@@ -739,17 +732,15 @@ class LyricSyncViewModel: ObservableObject {
                 continue
             }
 
-            // Extract content between the opening div and its matching closer
+            // Extract and clean the container's inner HTML
             var text = String(html[contentStart..<pos])
 
             // Convert <br> tags to newlines BEFORE stripping other tags
-            text = text.replacingOccurrences(of: "<br>", with: "\n")
-            text = text.replacingOccurrences(of: "<br/>", with: "\n")
-            text = text.replacingOccurrences(of: "<br />", with: "\n")
-            text = text.replacingOccurrences(of: "<Br>", with: "\n")
-            text = text.replacingOccurrences(of: "<BR>", with: "\n")
+            for tag in ["<br>", "<br/>", "<br />", "<Br>", "<BR>"] {
+                text = text.replacingOccurrences(of: tag, with: "\n")
+            }
 
-            // Strip remaining HTML tags
+            // Strip all remaining HTML tags
             if let tagRegex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
                 text = tagRegex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
             }
@@ -762,22 +753,73 @@ class LyricSyncViewModel: ObservableObject {
                 .replacingOccurrences(of: "&#x27;", with: "'")
                 .replacingOccurrences(of: "&#39;", with: "'")
                 .replacingOccurrences(of: "&nbsp;", with: " ")
+                .replacingOccurrences(of: "&#8230;", with: "…")
 
-            // Split on newlines and add non-empty lines
+            // Split, clean, and filter
             for line in text.components(separatedBy: "\n") {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
-                if !trimmed.isEmpty {
-                    resultChunks.append(trimmed)
+                if trimmed.isEmpty { continue }
+
+                // Skip Genesis meta headers: "N Contributors", "Translations",
+                // long description text, "Read More", section tags like [Verse 1]
+                // Only add the very first lyric line found, skip all preamble.
+                if isMetaHeader(trimmed) {
+                    // If we already have lyrics, this means we're past the lyric
+                    // section (e.g. footer annotations) — stop.
+                    if !resultChunks.isEmpty { break }
+                    continue
                 }
+
+                resultChunks.append(trimmed)
             }
 
-            // Continue searching after this container's closing </div>
-            searchStart = html.index(after: pos) // skip past the closing <
+            searchStart = html.index(after: pos)
             if searchStart < html.endIndex {
-                searchStart = html.index(searchStart, offsetBy: 5) // skip "div>"
+                searchStart = html.index(searchStart, offsetBy: 5)
             }
         }
 
         return resultChunks.joined(separator: "\n")
+    }
+
+    /// Returns true if a line is page metadata rather than an actual lyric.
+    private static func isMetaHeader(_ line: String) -> Bool {
+        // Section tags: [Verse], [Chorus], [Bridge], [Intro], [Outro], etc.
+        if line.hasPrefix("[") && line.hasSuffix("]") {
+            // But allow LRC-style timestamps like [00:12.34]
+            let inner = String(line.dropFirst().dropLast())
+            if inner.contains(":") {
+                // Could be a timestamp — check if it's actually a time
+                let parts = inner.split(separator: ":")
+                if parts.count >= 2, Int(parts[0]) != nil, Double(parts[1]) != nil {
+                    return false
+                }
+            }
+            return true
+        }
+
+        // "Read More" or "… Read More"
+        if line.lowercased().contains("read more") { return true }
+
+        // Footer: "Embed" / "Share" actions
+        if line == "Embed" || line == "Share" { return true }
+
+        // Prefix pattern: "N Contributors…" or "ContributorsTranslations…"
+        let lower = line.lowercased()
+        if lower.hasPrefix("contributor") || lower.hasPrefix("translation") {
+            return true
+        }
+
+        // Lines that are very long (> 200 chars) are likely meta descriptions,
+        // unless they have an LRC timestamp prefix.
+        if line.count > 200 && !line.hasPrefix("[") {
+            return true
+        }
+
+        // Standalone artist/song title info: line is just the song title or
+        // "ArtistName Lyrics" with no spaces (camelCase pattern from Genius)
+        // If the line starts with a number followed by contributor-style text
+
+        return false
     }
 }

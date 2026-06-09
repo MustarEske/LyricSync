@@ -11,7 +11,6 @@ struct LyricListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 if viewModel.document.hasImportedText {
                     Text("Lines")
@@ -27,6 +26,15 @@ struct LyricListView: View {
                     Text("\(viewModel.document.lyrics.count) lines")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
+                }
+                if !viewModel.document.lyrics.isEmpty {
+                    Button(action: { viewModel.clearAllLyrics() }) {
+                        Text("Clear")
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .foregroundColor(.red)
                 }
             }
             .padding(.horizontal, 12)
@@ -259,7 +267,19 @@ struct ImportedLineRow: View {
                     .buttonStyle(.borderless)
                     .foregroundColor(.red.opacity(0.7))
                     .help("Remove timing")
-                } else if isNext {
+                } else {
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 9))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(.secondary.opacity(0.4))
+                    .help("Remove line")
+                    if isNext {
+                        Spacer().frame(width: 2)
+                    }
+                }
+                if isNext {
                     Image(systemName: "arrow.right.circle.fill")
                         .font(.system(size: 10))
                         .foregroundColor(.orange)
@@ -339,14 +359,14 @@ struct LyricRowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if isSelected && !isEditing {
+            if !isEditing {
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 9))
                 }
                 .buttonStyle(.borderless)
-                .foregroundColor(.red.opacity(0.8))
-                .help("Remove timing")
+                .foregroundColor(isSelected ? .red.opacity(0.9) : .secondary.opacity(0.4))
+                .help(isSelected ? "Delete this line" : "Select then delete")
             }
         }
         .padding(.horizontal, 8)
