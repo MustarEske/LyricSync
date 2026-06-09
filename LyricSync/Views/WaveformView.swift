@@ -11,130 +11,135 @@ struct WaveformView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            Canvas { context, size in
-                let width = size.width
-                let height = size.height
-                let duration = viewModel.document.duration
+            ZStack {
+                Canvas { context, size in
+                    let width = size.width
+                    let height = size.height
+                    let duration = viewModel.document.duration
 
-                guard duration > 0 else {
-                    let emptyText = Text("Open an audio file to begin")
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                    context.draw(emptyText, at: CGPoint(x: width / 2, y: height / 2), anchor: .center)
-                    return
-                }
-
-                // ── Background ──
-                context.fill(
-                    Path(CGRect(origin: .zero, size: size)),
-                    with: .color(Color(NSColor.controlBackgroundColor))
-                )
-
-                // ── Waveform (single path, not 1000 rects) ──
-                drawWaveform(context: context, width: width, height: height)
-
-                // ── Time grid ──
-                drawTimeGrid(context: context, width: width, height: height, duration: duration)
-
-                // ── Lyric markers ──
-                let lyrics = viewModel.document.lyrics  // single access
-                for lyric in lyrics {
-                    var x = CGFloat(lyric.timestamp / duration) * width
-                    if lyric.id == dragLyricId {
-                        x += dragOffsetX
+                    guard duration > 0 else {
+                        let emptyText = Text("Open an audio file to begin")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                        context.draw(emptyText, at: CGPoint(x: width / 2, y: height / 2), anchor: .center)
+                        return
                     }
 
-                    let isSelected = lyric.id == viewModel.selectedLyricId
-                    let lineColor = isSelected ? Color.yellow : Color.red.opacity(0.8)
+                    // ── Background ──
+                    context.fill(
+                        Path(CGRect(origin: .zero, size: size)),
+                        with: .color(Color(NSColor.controlBackgroundColor))
+                    )
+
+                    // ── Waveform (single path) ──
+                    drawWaveform(context: context, width: width, height: height)
+
+                    // ── Time grid ──
+                    drawTimeGrid(context: context, width: width, height: height, duration: duration)
+
+                    // ── Lyric markers ──
+                    let lyrics = viewModel.document.lyrics
+                    for lyric in lyrics {
+                        var x = CGFloat(lyric.timestamp / duration) * width
+                        if lyric.id == dragLyricId {
+                            x += dragOffsetX
+                        }
+
+                        let isSelected = lyric.id == viewModel.selectedLyricId
+                        let lineColor = isSelected ? Color.yellow : Color.red.opacity(0.8)
+
+                        context.stroke(
+                            Path { path in
+                                path.move(to: CGPoint(x: x, y: 0))
+                                path.addLine(to: CGPoint(x: x, y: height))
+                            },
+                            with: .color(lineColor),
+                            lineWidth: isSelected ? 2 : 1
+                        )
+
+                        let triSize: CGFloat = 7
+                        context.fill(
+                            Path { path in
+                                path.move(to: CGPoint(x: x - triSize, y: 0))
+                                path.addLine(to: CGPoint(x: x + triSize, y: 0))
+                                path.addLine(to: CGPoint(x: x, y: triSize * 1.5))
+                                path.closeSubpath()
+                            },
+                            with: .color(lineColor)
+                        )
+
+                        let text = Text(lyric.formattedTimestamp)
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(isSelected ? .yellow : .secondary)
+                        context.draw(text, at: CGPoint(x: x + 2, y: triSize * 1.8), anchor: .leading)
+                    }
+
+                    // ── Playhead ──
+                    var playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * width
+                    if isDraggingPlayhead {
+                        playheadX = dragPlayheadX
+                    }
 
                     context.stroke(
                         Path { path in
-                            path.move(to: CGPoint(x: x, y: 0))
-                            path.addLine(to: CGPoint(x: x, y: height))
+                            path.move(to: CGPoint(x: playheadX, y: 0))
+                            path.addLine(to: CGPoint(x: playheadX, y: height))
                         },
-                        with: .color(lineColor),
-                        lineWidth: isSelected ? 2 : 1
+                        with: .color(.accentColor.opacity(0.2)),
+                        lineWidth: isDraggingPlayhead ? 12 : 8
                     )
 
-                    let triSize: CGFloat = 7
+                    context.stroke(
+                        Path { path in
+                            path.move(to: CGPoint(x: playheadX, y: 0))
+                            path.addLine(to: CGPoint(x: playheadX, y: height))
+                        },
+                        with: .color(.accentColor),
+                        lineWidth: isDraggingPlayhead ? 3 : 2
+                    )
+
                     context.fill(
                         Path { path in
-                            path.move(to: CGPoint(x: x - triSize, y: 0))
-                            path.addLine(to: CGPoint(x: x + triSize, y: 0))
-                            path.addLine(to: CGPoint(x: x, y: triSize * 1.5))
+                            path.move(to: CGPoint(x: playheadX - 6, y: 0))
+                            path.addLine(to: CGPoint(x: playheadX + 6, y: 0))
+                            path.addLine(to: CGPoint(x: playheadX, y: 10))
                             path.closeSubpath()
                         },
-                        with: .color(lineColor)
+                        with: .color(.accentColor)
                     )
-
-                    let text = Text(lyric.formattedTimestamp)
-                        .font(.system(size: 8, design: .monospaced))
-                        .foregroundColor(isSelected ? .yellow : .secondary)
-                    context.draw(text, at: CGPoint(x: x + 2, y: triSize * 1.8), anchor: .leading)
                 }
 
-                // ── Playhead ──
-                var playheadX = CGFloat(viewModel.audioEngine.currentTime / duration) * width
-                if isDraggingPlayhead {
-                    playheadX = dragPlayheadX
-                }
-
-                context.stroke(
-                    Path { path in
-                        path.move(to: CGPoint(x: playheadX, y: 0))
-                        path.addLine(to: CGPoint(x: playheadX, y: height))
-                    },
-                    with: .color(.accentColor.opacity(0.2)),
-                    lineWidth: isDraggingPlayhead ? 12 : 8
-                )
-
-                context.stroke(
-                    Path { path in
-                        path.move(to: CGPoint(x: playheadX, y: 0))
-                        path.addLine(to: CGPoint(x: playheadX, y: height))
-                    },
-                    with: .color(.accentColor),
-                    lineWidth: isDraggingPlayhead ? 3 : 2
-                )
-
-                context.fill(
-                    Path { path in
-                        path.move(to: CGPoint(x: playheadX - 6, y: 0))
-                        path.addLine(to: CGPoint(x: playheadX + 6, y: 0))
-                        path.addLine(to: CGPoint(x: playheadX, y: 10))
-                        path.closeSubpath()
-                    },
-                    with: .color(.accentColor)
-                )
+                // Transparent overlay for gesture handling — Canvas swallows gestures
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                handleDragChanged(value: value, geometry: geometry)
+                            }
+                            .onEnded { value in
+                                handleDragEnded(value: value, geometry: geometry)
+                            }
+                    )
+                    .onTapGesture { location in
+                        handleTap(at: location, geometry: geometry)
+                    }
+                    .contextMenu {
+                        Button("Remove Timing") {
+                            if let id = viewModel.selectedLyricId {
+                                viewModel.document.removeLyric(id: id)
+                                viewModel.selectedLyricId = nil
+                            }
+                        }
+                        Button("Seek Here") {
+                            if let id = viewModel.selectedLyricId,
+                               let lyric = viewModel.document.lyrics.first(where: { $0.id == id }) {
+                                viewModel.audioEngine.seek(to: lyric.timestamp)
+                            }
+                        }
+                    }
             }
             .clipped()
-            .contentShape(Rectangle())
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        handleDragChanged(value: value, geometry: geometry)
-                    }
-                    .onEnded { value in
-                        handleDragEnded(value: value, geometry: geometry)
-                    }
-            )
-            .onTapGesture { location in
-                handleTap(at: location, geometry: geometry)
-            }
-            .contextMenu {
-                Button("Remove Timing") {
-                    if let id = viewModel.selectedLyricId {
-                        viewModel.document.removeLyric(id: id)
-                        viewModel.selectedLyricId = nil
-                    }
-                }
-                Button("Seek Here") {
-                    if let id = viewModel.selectedLyricId,
-                       let lyric = viewModel.document.lyrics.first(where: { $0.id == id }) {
-                        viewModel.audioEngine.seek(to: lyric.timestamp)
-                    }
-                }
-            }
         }
     }
 

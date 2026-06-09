@@ -21,14 +21,21 @@ struct ContentView: View {
 
                 // Draggable sidebar divider
                 Color(NSColor.separatorColor)
-                    .frame(width: 4)
-                    .onHover { _ in
-                        NSCursor.resizeLeftRight.set()
+                    .frame(width: 6)
+                    .onHover { isInside in
+                        if isInside {
+                            NSCursor.resizeLeftRight.set()
+                        } else {
+                            NSCursor.arrow.set()
+                        }
                     }
                     .gesture(
                         DragGesture()
                             .onChanged { value in
                                 sidebarWidth = max(200, min(600, sidebarWidth + value.translation.width))
+                            }
+                            .onEnded { _ in
+                                NSCursor.arrow.set()
                             }
                     )
 
