@@ -147,11 +147,24 @@ struct LyricListView: View {
                                 viewModel.document.removeLyric(id: lyric.id)
                             },
                             onRemoveTiming: {
-                                // Remove timing: delete the lyric entry
                                 viewModel.document.removeLyric(id: lyric.id)
                                 if viewModel.selectedLyricId == lyric.id {
                                     viewModel.selectedLyricId = nil
                                 }
+                            },
+                            onAddAfter: {
+                                let nextTime: TimeInterval
+                                if index + 1 < viewModel.document.lyrics.count {
+                                    let current = lyric.timestamp
+                                    let next = viewModel.document.lyrics[index + 1].timestamp
+                                    nextTime = (current + next) / 2
+                                } else {
+                                    nextTime = lyric.timestamp + 2.0
+                                }
+                                viewModel.addLyric(at: nextTime)
+                            },
+                            onMoveFrom: { fromIndex in
+                                // Drag reorder: will be handled by onDrop
                             }
                         )
                         .id(lyric.id)
@@ -161,6 +174,10 @@ struct LyricListView: View {
                 .padding(.horizontal, 6)
             }
             .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
+            .onDrop(of: [.text], isTargeted: nil) { providers, location in
+                // Handle drop for reorder
+                return handleSidebarDrop(providers: providers, location: location)
+            }
             .onChange(of: viewModel.currentLyricIndex) { _, newIndex in
                 if let index = newIndex {
                     let lyrics = viewModel.document.lyrics
@@ -179,6 +196,11 @@ struct LyricListView: View {
                 }
             }
         }
+    }
+
+    private func handleSidebarDrop(providers: [NSItemProvider], location: CGPoint) -> Bool {
+        // For now, just return true to accept drops
+        return true
     }
 
     // MARK: - Empty State
@@ -334,6 +356,8 @@ struct LyricRowView: View {
     let onEditCommit: () -> Void
     let onDelete: () -> Void
     let onRemoveTiming: () -> Void
+    let onAddAfter: () -> Void
+    let onMoveFrom: (Int) -> Void
 
     var body: some View {
         HStack(spacing: 6) {
@@ -382,17 +406,24 @@ struct LyricRowView: View {
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .onTapGesture(count: 2) { onDoubleClick() }
+        .onRightClickGesture { _ in
+            onAddAfter()
+        }
+        .onDrag {
+            onMoveFrom(index)
+            return NSItemProvider(object: String(index) as NSString)
+        }
         .contextMenu {
-            Button("Remove Timing") {
-                onRemoveTiming()
+            Button("Add Line After") {
+                onAddAfter()
             }
+            Button("Delete") {
+                onDelete()
+            }
+            Divider()
             Button("Seek Here") {
                 onSelect()
             }
-            Divider()
-            Text(lyric.text.isEmpty ? "(empty)" : lyric.text)
-                .font(.caption)
-                .foregroundColor(.secondary)
         }
     }
 
@@ -413,4 +444,32 @@ struct LyricRowView: View {
             return Color.clear
         }
     }
+}
+
+// MARK: - Right-click gesture helper (shared with WaveformView)
+
+extension View {
+    func onRightClickGesture(perform action: @escaping (CGPoint) -> Void) -> some View {
+        self.background(
+            RightClickMonitorView(action: action)
+        )
+    }
+}
+
+struct RightClickMonitorView: NSViewRepresentable {
+    let action: (CGPoint) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { event in
+            let point = view.convert(event.locationInWindow, from: nil)
+            DispatchQueue.main.async {
+                action(point)
+            }
+            return event
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

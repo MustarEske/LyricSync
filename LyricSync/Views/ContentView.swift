@@ -12,6 +12,11 @@ struct ContentView: View {
             Divider()
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
+                    // ── Seek bar / timeline scrubber ──
+                    SeekBarView(viewModel: viewModel)
+                        .frame(height: 28)
+                        .background(Color(NSColor.controlBackgroundColor))
+
                     WaveformView(viewModel: viewModel)
                         .frame(minHeight: 120)
                         .background(Color(NSColor.controlBackgroundColor))

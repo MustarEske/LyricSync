@@ -29,6 +29,7 @@ SWIFT_FILES=(
     "$SCRIPT_DIR/LyricSync/Views/LyricListView.swift"
     "$SCRIPT_DIR/LyricSync/Views/TransportBar.swift"
     "$SCRIPT_DIR/LyricSync/Views/TapToSetOverlay.swift"
+    "$SCRIPT_DIR/LyricSync/Views/SeekBarView.swift"
 )
 
 SDK_PATH=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || echo "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")

@@ -189,6 +189,27 @@ class LyricSyncViewModel: ObservableObject {
         document.moveLyric(id: id, to: time)
     }
 
+    /// Reorder a lyric from one index to another (sidebar drag-to-reorder).
+    func moveLyric(fromIndex: Int, toIndex: Int) {
+        guard fromIndex != toIndex,
+              document.lyrics.indices.contains(fromIndex),
+              document.lyrics.indices.contains(toIndex) else { return }
+
+        let oldLyrics = document.lyrics
+        var newLyrics = oldLyrics
+        let lyric = newLyrics.remove(at: fromIndex)
+        newLyrics.insert(lyric, at: toIndex)
+
+        pushUndo(
+            description: "Reorder lyric",
+            undo: { [weak self] in self?.document.replaceLyrics(oldLyrics) },
+            redo: { [weak self] in self?.document.replaceLyrics(newLyrics) }
+        )
+
+        document.replaceLyrics(newLyrics)
+        selectedLyricId = lyric.id
+    }
+
     private var dragStartLyrics: [LyricLine]?
 
     func beginDragLyric(id: UUID) {
@@ -533,8 +554,8 @@ class LyricSyncViewModel: ObservableObject {
 
         for seg in segments {
             let gap = seg.timestamp - lastTs
-            // Start a new line on a long pause (>2s) or at ~8 words
-            if (gap > 2.0 || currentWords.count >= 8) && !currentWords.isEmpty {
+            // Start a new line on a long pause (>1.2s) or at ~6 words
+            if (gap > 1.2 || currentWords.count >= 6) && !currentWords.isEmpty {
                 let text = currentWords.joined(separator: " ")
                 if !text.isEmpty { lines.append(LyricLine(timestamp: lineStart, text: text)) }
                 currentWords = []

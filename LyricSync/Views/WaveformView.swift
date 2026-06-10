@@ -131,19 +131,23 @@ struct WaveformView: View {
                     .onTapGesture { location in
                         handleTap(at: location, geometry: geometry)
                     }
+                    .onRightClickGesture { location in
+                        handleRightClick(at: location, geometry: geometry)
+                    }
                     .contextMenu {
-                        Button("Remove Timing") {
+                        Button("Add Marker at Playhead") {
+                            let duration = viewModel.document.duration
+                            guard duration > 0 else { return }
+                            viewModel.addLyricAtCurrentTime()
+                        }
+                        Divider()
+                        Button("Remove Selected") {
                             if let id = viewModel.selectedLyricId {
                                 viewModel.document.removeLyric(id: id)
                                 viewModel.selectedLyricId = nil
                             }
                         }
-                        Button("Seek Here") {
-                            if let id = viewModel.selectedLyricId,
-                               let lyric = viewModel.document.lyrics.first(where: { $0.id == id }) {
-                                viewModel.audioEngine.seek(to: lyric.timestamp)
-                            }
-                        }
+                        .disabled(viewModel.selectedLyricId == nil)
                     }
             }
             .clipped()
@@ -303,5 +307,26 @@ struct WaveformView: View {
         }
         dragLyricId = nil
         dragOffsetX = 0
+    }
+
+    private func handleRightClick(at location: CGPoint, geometry: GeometryProxy) {
+        let duration = viewModel.document.duration
+        guard duration > 0 else { return }
+
+        // Check if right-clicked on an existing marker → remove it
+        for lyric in viewModel.document.lyrics {
+            let x = CGFloat(lyric.timestamp / duration) * geometry.size.width
+            if abs(location.x - x) < 20 {
+                viewModel.document.removeLyric(id: lyric.id)
+                if viewModel.selectedLyricId == lyric.id {
+                    viewModel.selectedLyricId = nil
+                }
+                return
+            }
+        }
+
+        // Right-clicked on empty space → add marker at that position
+        let time = Double(location.x / geometry.size.width) * duration
+        viewModel.addLyric(at: time)
     }
 }
